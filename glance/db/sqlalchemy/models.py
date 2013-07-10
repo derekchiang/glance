@@ -30,15 +30,17 @@ from sqlalchemy import Index, UniqueConstraint
 from glance.openstack.common import timeutils
 from glance.openstack.common import uuidutils
 
-BASE = declarative_base()
+from glance.db.pyquery.model import Model
 
+from glance.db import models
+
+BASE = declarative_base()
 
 @compiles(BigInteger, 'sqlite')
 def compile_big_int_sqlite(type_, compiler, **kw):
     return 'INTEGER'
 
-
-class ModelBase(object):
+class ModelBase(Model):
     """Base class for Nova and Glance Models"""
     __table_args__ = {'mysql_engine': 'InnoDB'}
     __table_initialized__ = False
@@ -104,7 +106,7 @@ class ModelBase(object):
         return d
 
 
-class Image(BASE, ModelBase):
+class Image(BASE, ModelBase, models.Image):
     """Represents an image in the datastore"""
     __tablename__ = 'images'
 
@@ -122,7 +124,7 @@ class Image(BASE, ModelBase):
     protected = Column(Boolean, nullable=False, default=False)
 
 
-class ImageProperty(BASE, ModelBase):
+class ImageProperty(BASE, ModelBase, models.ImageProperty):
     """Represents an image properties in the datastore"""
     __tablename__ = 'image_properties'
     __table_args__ = (UniqueConstraint('image_id', 'name'), {})
@@ -136,7 +138,7 @@ class ImageProperty(BASE, ModelBase):
     value = Column(Text)
 
 
-class ImageTag(BASE, ModelBase):
+class ImageTag(BASE, ModelBase, models.ImageTag):
     """Represents an image tag in the datastore"""
     __tablename__ = 'image_tags'
 
@@ -145,7 +147,7 @@ class ImageTag(BASE, ModelBase):
     value = Column(String(255), nullable=False)
 
 
-class ImageLocation(BASE, ModelBase):
+class ImageLocation(BASE, ModelBase, models.ImageLocation):
     """Represents an image location in the datastore"""
     __tablename__ = 'image_locations'
 
@@ -155,7 +157,7 @@ class ImageLocation(BASE, ModelBase):
     value = Column(Text(), nullable=False)
 
 
-class ImageMember(BASE, ModelBase):
+class ImageMember(BASE, ModelBase, models.ImageMember):
     """Represents an image members in the datastore"""
     __tablename__ = 'image_members'
     unique_constraint_key_name = 'image_members_image_id_member_deleted_at_key'

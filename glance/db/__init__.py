@@ -33,6 +33,9 @@ CONF.import_opt('metadata_encryption_key', 'glance.common.config')
 def get_api():
     return importutils.import_module(CONF.data_api)
 
+def get_backend():
+    return importutils.import_module(CONF.data_backend)
+
 
 # attributes common to all models
 BASE_MODEL_ATTRS = set(['id', 'created_at', 'updated_at', 'deleted_at',
