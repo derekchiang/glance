@@ -74,7 +74,7 @@ class Query(object):
         self.impl = query_impl
         self.model = None
 
-    def __call__(self, model, session):
+    def __call__(self, model, session=None):
         self.model = model
         self.specs = []
         self.orders = []
@@ -97,7 +97,7 @@ class Query(object):
 
     def filter(self, *args, **kwargs):
         if len(args) == 0:
-            for k, v in kwargs:
+            for k, v in kwargs.iteritems():
                 self.specs.push(Attr(k, EQ(v)))
         else:
             self.specs.extend(args)

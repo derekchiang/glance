@@ -6,6 +6,8 @@ from model import Model
 from sqlalchemy.orm import joinedload
 from sqlalchemy import asc, desc
 
+from glance.db.sqlalchemy.exceptions import NoResultFoundError
+
 from glance.db.sqlalchemy.api import _get_session
 
 # engine = None  # Need to be set up
@@ -20,7 +22,10 @@ class SQLAlchemyQueryImpl(QueryImplementation):
 
     @staticmethod
     def first(**kwargs):
-        return SQLAlchemyQueryImpl.fetch(number=1, **kwargs)[0]
+        try:
+            return SQLAlchemyQueryImpl.fetch(number=1, **kwargs)[0]
+        except IndexError:
+            return None
 
     @staticmethod
     def fetch(**kwargs):

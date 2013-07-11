@@ -25,6 +25,7 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import ForeignKey, DateTime, Boolean, Text
 from sqlalchemy.orm import relationship, backref, object_mapper
+from sqlalchemy.orm.session import object_session
 from sqlalchemy import Index, UniqueConstraint
 
 from glance.openstack.common import timeutils
@@ -58,7 +59,10 @@ class ModelBase(Model):
         """Save this object"""
         # import api here to prevent circular dependency problem
         import glance.db.sqlalchemy.api as db_api
-        session = session or db_api._get_session()
+
+        # the instance might be attached to a session already
+        session = object_session(self) or session or db_api._get_session()
+
         session.add(self)
         session.flush()
 
