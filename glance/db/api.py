@@ -45,6 +45,10 @@ STATUSES = ['active', 'saving', 'queued', 'killed', 'pending_delete',
 
 backend = get_backend()
 
+# TODO: why is this not working?
+exceptions = get_backend('exceptions')
+models = get_backend('models')
+
 # For backward compatibility
 setup_db_env = backend.api.setup_db_env
 clear_db_env = backend.api.clear_db_env
@@ -53,8 +57,6 @@ def get_session():
     return backend.api._get_session()
 
 query = Query(SQLAlchemyQueryImpl)
-
-models = backend.models
 
 def _check_mutate_authorization(context, image_ref):
     if not is_image_mutable(context, image_ref):
@@ -500,7 +502,8 @@ def _image_update(context, values, image_id, purge_props=False):
 
         try:
             image_ref.save(session=session)
-        except sqlalchemy.exc.IntegrityError:
+        # TODO: shouldn't 
+        except exceptions.DuplicateKeyError:
             raise exception.Duplicate("Image ID %s already exists!"
                                       % values['id'])
 
@@ -662,7 +665,7 @@ def _image_member_find(context, session, image_id=None,
             models.Image.owner == context.owner,
             models.ImageMember.member == context.owner,
         ]
-        query = query.filter(sa_sql.or_(*filters))
+        query = query.filter(Or(*filters))
 
     if image_id is not None:
         query = query.filter(Attr('image_id', EQ(image_id)))
@@ -721,7 +724,7 @@ def image_tag_delete(context, image_id, value, session=None):
                    .filter(deleted=False)
     try:
         tag_ref = query.one()
-    except sa_orm.exc.NoResultFound:
+    except exceptions.NoResultFoundError:
         raise exception.NotFound()
 
     tag_ref.delete(session=session)
