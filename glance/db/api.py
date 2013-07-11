@@ -514,16 +514,15 @@ def _image_update(context, values, image_id, purge_props=False):
 
 
 def _image_locations_set(image_id, locations, session):
-    location_refs = query(models.ImageLocation)\
+    location_refs = query(models.ImageLocation, session)\
                            .filter_by(Attr('image_id', EQ(image_id)))\
-                           .filter_by(Attr('deleted', EQ(False)))\
+                       .filter_by(Attr('deleted', EQ(False)))\
                            .all()
     for location_ref in location_refs:
         location_ref.delete(session=session)
 
     for location in locations:
-        location_ref = models.ImageLocation(And(Attr('image_id', EQ(image_id)),
-                                                Attr('value', EQ(location))))
+        location_ref = models.ImageLocation(image_id=image_id, value=location)
         location_ref.save()
 
 
