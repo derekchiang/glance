@@ -27,7 +27,7 @@ import glance.openstack.common.log as os_logging
 from glance.openstack.common import timeutils
 from glance.openstack.common.gettextutils import _
 from pyquery.query import Query
-from pyquery.sqlalchemy import SQLAlchemyQueryImpl
+from pyquery.sqlalchemy_driver import SQLAlchemyQueryImpl
 from pyquery.spec import Attr, EQ, GT, LT, And, Or, NEQ
 
 _ENGINE = None
@@ -45,8 +45,12 @@ STATUSES = ['active', 'saving', 'queued', 'killed', 'pending_delete',
 
 backend = get_backend()
 
+# For backward compatibility
+setup_db_env = backend.api.setup_db_env
+clear_db_env = backend.api.clear_db_env
+
 def get_session():
-    return backend.get_session()
+    return backend.api._get_session()
 
 query = Query(SQLAlchemyQueryImpl)
 
@@ -110,6 +114,7 @@ def _normalize_locations(image):
 def image_get(context, image_id, session=None, force_show_deleted=False):
     image = _image_get(context, image_id, session=session,
                        force_show_deleted=force_show_deleted)
+    print image.to_dict()
     image = _normalize_locations(image.to_dict())
     return image
 
@@ -118,7 +123,7 @@ def _image_get(context, image_id, session=None, force_show_deleted=False):
     """Get an image or raise if it does not exist."""
     session = session or get_session()
     global query
-    query = query(models.Image, session=session).filter(Attr('id', EQ(image_id)))
+    query = query(models.Image, session=session).filter(Attr('id', EQ(image_id))).joinload(models.Image, 'properties').joinload(models.Image, 'locations')
 
     # filter out deleted images if context disallows it
     if not force_show_deleted and not _can_show_deleted(context):
