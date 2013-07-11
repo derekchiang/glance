@@ -6,3 +6,6 @@ class NoResultFoundError(NoResultFound):
 
 class DuplicateKeyError(IntegrityError):
     pass
+
+class InvalidSpecError(Exception):
+    pass

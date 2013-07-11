@@ -258,9 +258,9 @@ def _paginate_query(query, model, limit, sort_keys, marker=None,
     :return: The query with sorting/pagination added.
     """
     assert(not (sort_dir and sort_dirs))
-    assert(len(sort_dirs) == len(sort_keys))
     if sort_dirs is None:
         sort_dirs = [sort_dir for _ in sort_keys]
+    assert(len(sort_dirs) == len(sort_keys))
 
     criterions = []
     for index, key in enumerate(sort_keys):

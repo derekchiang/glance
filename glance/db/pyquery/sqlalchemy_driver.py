@@ -5,8 +5,9 @@ from model import Model
 
 from sqlalchemy.orm import joinedload
 from sqlalchemy import asc, desc
+from sqlalchemy import not_, or_, and_
 
-from glance.db.sqlalchemy.exceptions import NoResultFoundError
+from glance.db.sqlalchemy.exceptions import NoResultFoundError, InvalidSpecError
 
 from glance.db.sqlalchemy.api import _get_session
 
@@ -21,18 +22,45 @@ class InvalidOrderException(Exception):
 class SQLAlchemyQueryImpl(QueryImplementation):
 
     @staticmethod
-    def first(**kwargs):
+    def translate_spec(model, spec):
+        if isinstance(spec, Attr):
+            if isinstance(spec.value_spec, EQ):
+                return (getattr(model, spec.attr) == spec.value_spec.value)
+            elif isinstance(spec.value_spec, GT):
+                return (getattr(model, spec.attr) > spec.value_spec.value)
+            elif isinstance(spec.value_spec, LT):
+                return (getattr(model, spec.attr) < spec.value_spec.value)
+            elif isinstance(spec.value_spec, GTE):
+                return (getattr(model, spec.attr) >= spec.value_spec.value)
+            elif isinstance(spec.value_spec, LTE):
+                return (getattr(model, spec.attr) <= spec.value_spec.value)
+        elif isinstance(spec, Not):
+            return not_(SQLAlchemyQueryImpl.translate_spec(model, spec.spec))
+        else:
+            lst = []
+            for sub_spec in spec.specs:
+                lst.append(SQLAlchemyQueryImpl.translate_spec(model, sub_spec))
+            if isinstance(spec, And):
+                return and_(*lst)
+            elif isinstance(spec, Or):
+                return or_(*lst)
+            else:
+                raise InvalidSpecError()
+
+
+    @staticmethod
+    def first(*args, **kwargs):
         try:
             return SQLAlchemyQueryImpl.fetch(number=1, **kwargs)[0]
         except IndexError:
             return None
 
     @staticmethod
-    def fetch(**kwargs):
+    def fetch(*args, **kwargs):
         return SQLAlchemyQueryImpl.all(**kwargs)[:kwargs['number']]
 
     @staticmethod
-    def all(**kwargs):
+    def all(*args, **kwargs):
         model = kwargs['model']
         specs = kwargs['specs']
         joins = kwargs['joins']
@@ -42,19 +70,10 @@ class SQLAlchemyQueryImpl(QueryImplementation):
         join_filters = kwargs.get('join_filters')
         if join_filters:
             for join_name, spec in join_filters:
-                query.join(join_name).filter(translate(spec))
+                query.join(join_name).filter(SQLAlchemyQueryImpl.translate_spec(model, spec))
 
         for spec in specs:
-            if isinstance(spec.value_spec, EQ):
-                query = query.filter(getattr(model, spec.attr) == spec.value_spec.value)
-            elif isinstance(spec.value_spec, GT):
-                query = query.filter(getattr(model, spec.attr) > spec.value_spec.value)
-            elif isinstance(spec.value_spec, LT):
-                query = query.filter(getattr(model, spec.attr) < spec.value_spec.value)
-            elif isinstance(spec.value_spec, GTE):
-                query = query.filter(getattr(model, spec.attr) >= spec.value_spec.value)
-            elif isinstance(spec.value_spec, LTE):
-                query = query.filter(getattr(model, spec.attr) <= spec.value_spec.value)
+            query = query.filter(SQLAlchemyQueryImpl.translate_spec(model, spec))
 
         for m, key in joins:
             query = query.options(joinedload(getattr(m, key)))
@@ -70,7 +89,9 @@ class SQLAlchemyQueryImpl(QueryImplementation):
         return query.all()
 
     @staticmethod
-    def delete(model, specs, session):
+    def delete(*args, **kwargs):
+        model = kwargs['model']
+        specs = kwargs['specs']
         instances = SQLAlchemyQueryImpl.all(model, specs)
         for i in instances:
             session.delete(i)
@@ -78,7 +99,11 @@ class SQLAlchemyQueryImpl(QueryImplementation):
         session.commit()
 
     @staticmethod
-    def insert(model, specs, values, session):
+    def insert(*args, **kwargs):
+        specs = kwargs['specs']
+        model = kwargs['model']
+        values = kwargs['values']
+
         if specs:
             instances = SQLAlchemyQueryImpl.all(model, specs)
             for i in instances:

@@ -3,3 +3,6 @@ class NoResultFoundError(Exception):
 
 class DuplicateKeyError(Exception):
     pass
+
+class InvalidSpecError(Exception):
+    pass
