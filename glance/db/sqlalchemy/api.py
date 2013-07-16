@@ -170,7 +170,7 @@ def get_engine():
 
         engine_args = {
             'pool_recycle': _IDLE_TIMEOUT,
-            'echo': False,
+            'echo': True,
             'convert_unicode': True}
 
         try:

@@ -10,6 +10,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+def inspect_attr(spec):
+    print spec
+    print spec.__dict__
+    if spec.__dict__.get('value_spec'):
+        inspect_attr(spec.__dict__['value_spec'])
+    if spec.__dict__.get('specs'):
+        for spec in spec.__dict__['specs']:
+            inspect_attr(spec)
 
 class Attr(object):
 

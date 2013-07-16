@@ -39,7 +39,7 @@ class QueryImplementation(object):
     joins: a list of tuples of a model and a key, like: [ (models.Children,
     'name'), (models.Friend, 'age') ]
 
-    orders: a list of dictionary, like: { age: 'asc', name: 'decs' }
+    orders: a list of tuples, like: [ ('age', 'asc'), ('name': 'decs') ]
     """
 
     def first(self, model, specs, joins, orders, session):
@@ -69,7 +69,7 @@ class Query(object):
 
     def __init__(self, model=None, session=None, query_impl=None):
         self.specs = []
-        self.orders = {}
+        self.orders = []
         self.joins = []
         self.join_filters = []
         self.model = model
@@ -164,5 +164,5 @@ class Query(object):
         return self
 
     def order_by(self, key, order="asc"):
-        self.orders[key] = order
+        self.orders.append((key, order))
         return self

@@ -28,7 +28,7 @@ from glance.openstack.common import timeutils
 from glance.openstack.common.gettextutils import _
 from pyquery.query import Query
 from pyquery.sqlalchemy_driver import SQLAlchemyQueryImpl
-from pyquery.spec import Attr, EQ, GT, LT, And, Or, NEQ
+from pyquery.spec import Attr, EQ, GT, LT, And, Or, NEQ, inspect_attr
 
 _ENGINE = None
 _MAKER = None
@@ -131,16 +131,7 @@ def _image_get(context, image_id, session=None, force_show_deleted=False):
     if not force_show_deleted and not _can_show_deleted(context):
         query = query.filter(Attr('deleted', EQ(False)))
 
-    # print 'image_id: '
-    # print image_id
-    # print query.__dict__
-    # print query.specs
-    # print query.specs[0].attr
-    value_spec = query.specs[0].value_spec
-    # print value_spec
-    print value_spec.value
     image = query.first()
-    print "HAHAHA"
 
     if image is None:
         msg = (_("No image found with ID %s") % image_id)
@@ -313,9 +304,11 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                       an admin the equivalent set of images which it would see
                       if it were a regular user
     """
+    print "getting all!"
     query = get_query(models.Image)
 
     if (not context.is_admin) or admin_as_user == True:
+        print "yay"
         visibility_filters = [ Attr('is_public', EQ(True)) ]
         member_filters = [ Attr('members.deleted', EQ(False)) ]
         
@@ -327,7 +320,10 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                 visibility_filters.extend([ Attr('owner', EQ(context.owner)) ])
                 member_filters.extend([ Attr('members.member', EQ(context.owner)), Attr('members.status', EQ(member_status)) ])
 
-    # TODO: How to deal with this statement?
+            # sanity check
+            assert (len(visibility_filters) == 2)
+            assert (2 <= len(member_filters) <= 3)
+
     query = query.filter(Or(*[Or(*visibility_filters), And(*member_filters)]))
 
     if 'visibility' in filters:
@@ -402,12 +398,18 @@ def image_get_all(context, filters=None, marker=None, limit=None,
 
     query = query.joinload('properties').joinload('locations')
 
+    print "sort_key:"
+    print sort_key
     images = _paginate_query(query, models.Image, limit,
                             [sort_key, 'created_at', 'id'],
                             marker=marker_image,
                             sort_dir=sort_dir)
 
-    # query = query.join('properties').join('locations')
+    # for debug purposes only
+    # images = query.all()
+    # print "Images!!"
+    # print images
+    # print len(images)
 
     return [_normalize_locations(image.to_dict()) for image in images]
 
