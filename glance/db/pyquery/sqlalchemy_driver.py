@@ -7,39 +7,48 @@ from sqlalchemy.orm import joinedload
 from sqlalchemy import asc, desc
 from sqlalchemy import not_, or_, and_
 
-from glance.db.sqlalchemy.exceptions import NoResultFoundError, InvalidSpecError
-
+from glance.db.sqlalchemy.exceptions import InvalidSpecError
 from glance.db.sqlalchemy.api import _get_session
+from glance.db.models import get_related_model
 
 # engine = None  # Need to be set up
 # Session = sessionmaker()
 # Session.configure(bind=engine)
-session = _get_session()
+# session = _get_session()
 
 class InvalidOrderException(Exception):
     pass
 
 class SQLAlchemyQueryImpl(QueryImplementation):
 
-    @staticmethod
-    def translate_spec(model, spec):
+    @classmethod
+    def translate_spec(cls, model, spec):
         if isinstance(spec, Attr):
+            attr = spec.attr
+
+            # To deal with join queries like `members.name == "Derek"`
+            if '.' in spec.attr:
+                parts = spec.attr.split('.')
+                ref_name = parts[0]
+                attr = parts[1]
+                model = get_related_model(model, ref_name)
+
             if isinstance(spec.value_spec, EQ):
-                return (getattr(model, spec.attr) == spec.value_spec.value)
+                return (getattr(model, attr) == spec.value_spec.value)
             elif isinstance(spec.value_spec, GT):
-                return (getattr(model, spec.attr) > spec.value_spec.value)
+                return (getattr(model, attr) > spec.value_spec.value)
             elif isinstance(spec.value_spec, LT):
-                return (getattr(model, spec.attr) < spec.value_spec.value)
+                return (getattr(model, attr) < spec.value_spec.value)
             elif isinstance(spec.value_spec, GTE):
-                return (getattr(model, spec.attr) >= spec.value_spec.value)
+                return (getattr(model, attr) >= spec.value_spec.value)
             elif isinstance(spec.value_spec, LTE):
-                return (getattr(model, spec.attr) <= spec.value_spec.value)
+                return (getattr(model, attr) <= spec.value_spec.value)
         elif isinstance(spec, Not):
-            return not_(SQLAlchemyQueryImpl.translate_spec(model, spec.spec))
+            return not_(cls.translate_spec(model, spec.spec))
         else:
             lst = []
             for sub_spec in spec.specs:
-                lst.append(SQLAlchemyQueryImpl.translate_spec(model, sub_spec))
+                lst.append(cls.translate_spec(model, sub_spec))
             if isinstance(spec, And):
                 return and_(*lst)
             elif isinstance(spec, Or):
@@ -48,64 +57,80 @@ class SQLAlchemyQueryImpl(QueryImplementation):
                 raise InvalidSpecError()
 
 
-    @staticmethod
-    def first(*args, **kwargs):
+    @classmethod
+    def first(cls, *args, **kwargs):
         try:
-            return SQLAlchemyQueryImpl.fetch(number=1, **kwargs)[0]
+            return cls.fetch(number=1, **kwargs)[0]
         except IndexError:
             return None
 
-    @staticmethod
-    def fetch(*args, **kwargs):
-        return SQLAlchemyQueryImpl.all(**kwargs)[:kwargs['number']]
+    @classmethod
+    def fetch(cls, *args, **kwargs):
+        number = None
+        if len(args) > 0:
+            number = args[0]
+        else:
+            number = kwargs['number']
+        return cls.all(**kwargs)[:number]
 
-    @staticmethod
-    def all(*args, **kwargs):
+    @classmethod
+    def all(cls, *args, **kwargs):
         model = kwargs['model']
         specs = kwargs['specs']
         joins = kwargs['joins']
         orders = kwargs['orders']
-        query = session.query(model)
-
         join_filters = kwargs.get('join_filters')
-        if join_filters:
-            for join_name, spec in join_filters:
-                query.join(join_name).filter(SQLAlchemyQueryImpl.translate_spec(model, spec))
 
-        for spec in specs:
-            query = query.filter(SQLAlchemyQueryImpl.translate_spec(model, spec))
+        query = _get_session().query(model)
 
         for m, key in joins:
+            print "using joins"
+            print m
+            print key
             query = query.options(joinedload(getattr(m, key)))
 
-        for attr, order in orders:
+        if join_filters:
+            print "using join_filters"
+            for join_name, spec in join_filters:
+                query.join(join_name).filter(cls.translate_spec(model, spec))
+
+        for spec in specs:
+            query = query.filter(cls.translate_spec(model, spec))
+
+        for attr, order in orders.iteritems():
+            print "using orders"
             if order == 'asc':
-                query = query.order_by(asc(model[attr]))
+                query = query.order_by(asc(getattr(model, attr)))
             elif order == 'desc':
-                query = query.order_by(desc(model[attr]))
+                query = query.order_by(desc(getattr(model, attr)))
             else:
                 raise InvalidOrderException('Order needs to be either "asc" or "desc"')
 
+
         return query.all()
 
-    @staticmethod
-    def delete(*args, **kwargs):
+    @classmethod
+    def delete(cls, *args, **kwargs):
+        session = _get_session()
+
         model = kwargs['model']
         specs = kwargs['specs']
-        instances = SQLAlchemyQueryImpl.all(model, specs)
+        instances = cls.all(model, specs)
         for i in instances:
             session.delete(i)
 
         session.commit()
 
-    @staticmethod
-    def insert(*args, **kwargs):
+    @classmethod
+    def insert(cls, *args, **kwargs):
+        session = _get_session()
+
         specs = kwargs['specs']
         model = kwargs['model']
         values = kwargs['values']
 
         if specs:
-            instances = SQLAlchemyQueryImpl.all(model, specs)
+            instances = cls.all(model, specs)
             for i in instances:
                 for k, v in values:
                     i[k] = v

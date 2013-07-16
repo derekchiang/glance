@@ -86,7 +86,7 @@ The question "How do we get the schools with a student named Derek?", when writt
 
 	query(School).join_filter('students', EQ('name', 'Derek'))
 
-PyQuery checks if the model that "students" point to, which is Student in this case, actually has an underlying model.  If so (in the case of SQLAlchemy), PyQuery translate the query above to a SQLAlchemy equivalent.  If not (in the case of Cassandra), PyQuery first applies all other filters, and then use the query() method to see if any returned students if of a school, and finally return the final list of schools.
+PyQuery checks if the model that "students" point to, which is Student in this case, actually has an underlying model.  If so (in the case of SQLAlchemy), PyQuery translate the query above to a SQLAlchemy equivalent.  If not (in the case of Cassandra), PyQuery first applies all other filters, and then use the query() method to see if any returned students is of a school, and finally return the final list of schools.
 
 Now, what happens when I when to query a pet, which in Cassandra's case is a serialized model inside another serialized model (student)?
 

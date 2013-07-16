@@ -56,7 +56,7 @@ clear_db_env = backend.api.clear_db_env
 def get_session():
     return backend.api._get_session()
 
-query = Query(SQLAlchemyQueryImpl)
+get_query = Query(query_impl=SQLAlchemyQueryImpl)
 
 def _check_mutate_authorization(context, image_ref):
     if not is_image_mutable(context, image_ref):
@@ -104,7 +104,7 @@ def image_destroy(context, image_id):
         for memb_ref in members:
             _image_member_delete(context, memb_ref, session)
 
-    return _normalize_locations(image_ref)
+    return _normalize_locations(image_ref.to_dict())
 
 
 def _normalize_locations(image):
@@ -114,9 +114,10 @@ def _normalize_locations(image):
 
 
 def image_get(context, image_id, session=None, force_show_deleted=False):
+    assert image_id is not None
+
     image = _image_get(context, image_id, session=session,
                        force_show_deleted=force_show_deleted)
-    print image.to_dict()
     image = _normalize_locations(image.to_dict())
     return image
 
@@ -124,14 +125,22 @@ def image_get(context, image_id, session=None, force_show_deleted=False):
 def _image_get(context, image_id, session=None, force_show_deleted=False):
     """Get an image or raise if it does not exist."""
     session = session or get_session()
-    global query
-    query = query(models.Image, session=session).filter(Attr('id', EQ(image_id))).joinload(models.Image, 'properties').joinload(models.Image, 'locations')
+    query = get_query(models.Image, session=session).filter(Attr('id', EQ(image_id))).joinload('properties').joinload('locations')
 
     # filter out deleted images if context disallows it
     if not force_show_deleted and not _can_show_deleted(context):
         query = query.filter(Attr('deleted', EQ(False)))
 
+    # print 'image_id: '
+    # print image_id
+    # print query.__dict__
+    # print query.specs
+    # print query.specs[0].attr
+    value_spec = query.specs[0].value_spec
+    # print value_spec
+    print value_spec.value
     image = query.first()
+    print "HAHAHA"
 
     if image is None:
         msg = (_("No image found with ID %s") % image_id)
@@ -279,7 +288,7 @@ def _paginate_query(query, model, limit, sort_keys, marker=None,
     if criterions is not []:
         query.filter(*criterions)
 
-    query.fetch(limit)
+    return query.fetch(limit)
 
 
 def image_get_all(context, filters=None, marker=None, limit=None,
@@ -304,8 +313,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                       an admin the equivalent set of images which it would see
                       if it were a regular user
     """
-    global query
-    query = query(models.Image)
+    query = get_query(models.Image)
 
     if (not context.is_admin) or admin_as_user == True:
         visibility_filters = [ Attr('is_public', EQ(True)) ]
@@ -317,10 +325,10 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                 member_filters.extend([ Attr('members.member', EQ(context.owner)) ])
             else:
                 visibility_filters.extend([ Attr('owner', EQ(context.owner)) ])
-                member_filters.extend([ Attr('members.member', EQ(context.owner)),
-                                        Attr('members.status', EQ(member_status))])
+                member_filters.extend([ Attr('members.member', EQ(context.owner)), Attr('members.status', EQ(member_status)) ])
 
-    query = query.filter(Or(Or(*visibility_filters), And(*member_filters)))
+    # TODO: How to deal with this statement?
+    query = query.filter(Or(*[Or(*visibility_filters), And(*member_filters)]))
 
     if 'visibility' in filters:
         visibility = filters.pop('visibility')
@@ -332,7 +340,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                                               or admin_as_user == True):
                 query = query.filter(owner = context.owner)
         else:
-            query.filter(And(Attr('members.member', EQ(context.owner)), Attr('members.deleted', EQ(False))))
+            query.join_filter('members', And(Attr('member', EQ(context.owner)), Attr('deleted', EQ(False))))
 
     if is_public is not None:
         query = query.filter(Attr('is_public', EQ(is_public)))
@@ -392,14 +400,16 @@ def image_get_all(context, filters=None, marker=None, limit=None,
         marker_image = _image_get(context, marker,
                                   force_show_deleted=showing_deleted)
 
-    query = _paginate_query(query, models.Image, limit,
+    query = query.joinload('properties').joinload('locations')
+
+    images = _paginate_query(query, models.Image, limit,
                             [sort_key, 'created_at', 'id'],
                             marker=marker_image,
                             sort_dir=sort_dir)
 
-    query = query.join('properties').join('locations')
+    # query = query.join('properties').join('locations')
 
-    return [_normalize_locations(image.to_dict()) for image in query.all()]
+    return [_normalize_locations(image.to_dict()) for image in images]
 
 
 def _drop_protected_attrs(model_class, values):
@@ -517,7 +527,7 @@ def _image_update(context, values, image_id, purge_props=False):
 
 
 def _image_locations_set(image_id, locations, session):
-    location_refs = query(models.ImageLocation, session)\
+    location_refs = get_query(models.ImageLocation, session)\
                            .filter_by(Attr('image_id', EQ(image_id)))\
                        .filter_by(Attr('deleted', EQ(False)))\
                            .all()
@@ -637,7 +647,7 @@ def _image_member_delete(context, memb_ref, session):
 
 def _image_member_get(context, memb_id, session):
     """Fetch an ImageMember entity by id"""
-    query = session.query(models.ImageMember)
+    query = get_query(models.ImageMember)
     query = query.filter(Attr('id', EQ(memb_id)))
     return query.first()
 
@@ -655,15 +665,13 @@ def image_member_find(context, image_id=None, member=None, status=None):
 
 def _image_member_find(context, session, image_id=None,
                        member=None, status=None):
-    global query
-    query = query(models.ImageMember, session=session)
+    query = get_query(models.ImageMember, session=session)
     query = query.filter(Attr('deleted', EQ(False)))
 
     if not context.is_admin:
-        query = query.join(models.Image)
         filters = [
-            models.Image.owner == context.owner,
-            models.ImageMember.member == context.owner,
+            Attr('image.owner', EQ(context.owner)),
+            Attr('member', EQ(context.owner)),
         ]
         query = query.filter(Or(*filters))
 
@@ -718,7 +726,7 @@ def image_tag_create(context, image_id, value, session=None):
 def image_tag_delete(context, image_id, value, session=None):
     """Delete an image tag."""
     session = session or get_session()
-    query = session.query(models.ImageTag)\
+    query = get_query(models.ImageTag)\
                    .filter(image_id=image_id)\
                    .filter(value=value)\
                    .filter(deleted=False)
@@ -733,7 +741,7 @@ def image_tag_delete(context, image_id, value, session=None):
 def image_tag_get_all(context, image_id, session=None):
     """Get a list of tags for a specific image."""
     session = session or get_session()
-    tags = session.query(models.ImageTag)\
+    tags = get_query(models.ImageTag)\
                   .filter_by(image_id=image_id)\
                   .filter_by(deleted=False)\
                   .order_by('created_at')\

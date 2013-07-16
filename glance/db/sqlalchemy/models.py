@@ -33,7 +33,7 @@ from glance.openstack.common import uuidutils
 
 from glance.db.pyquery.model import Model
 
-from glance.db import models
+# from glance.db import models
 
 BASE = declarative_base()
 
@@ -110,7 +110,7 @@ class ModelBase(Model):
         return d
 
 
-class Image(BASE, ModelBase, models.Image):
+class Image(BASE, ModelBase):
     """Represents an image in the datastore"""
     __tablename__ = 'images'
 
@@ -128,7 +128,7 @@ class Image(BASE, ModelBase, models.Image):
     protected = Column(Boolean, nullable=False, default=False)
 
 
-class ImageProperty(BASE, ModelBase, models.ImageProperty):
+class ImageProperty(BASE, ModelBase):
     """Represents an image properties in the datastore"""
     __tablename__ = 'image_properties'
     __table_args__ = (UniqueConstraint('image_id', 'name'), {})
@@ -142,7 +142,7 @@ class ImageProperty(BASE, ModelBase, models.ImageProperty):
     value = Column(Text)
 
 
-class ImageTag(BASE, ModelBase, models.ImageTag):
+class ImageTag(BASE, ModelBase):
     """Represents an image tag in the datastore"""
     __tablename__ = 'image_tags'
 
@@ -151,7 +151,7 @@ class ImageTag(BASE, ModelBase, models.ImageTag):
     value = Column(String(255), nullable=False)
 
 
-class ImageLocation(BASE, ModelBase, models.ImageLocation):
+class ImageLocation(BASE, ModelBase):
     """Represents an image location in the datastore"""
     __tablename__ = 'image_locations'
 
@@ -161,7 +161,7 @@ class ImageLocation(BASE, ModelBase, models.ImageLocation):
     value = Column(Text(), nullable=False)
 
 
-class ImageMember(BASE, ModelBase, models.ImageMember):
+class ImageMember(BASE, ModelBase):
     """Represents an image members in the datastore"""
     __tablename__ = 'image_members'
     unique_constraint_key_name = 'image_members_image_id_member_deleted_at_key'

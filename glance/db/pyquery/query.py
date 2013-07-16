@@ -67,20 +67,17 @@ class Query(object):
     An abstraction for efficiently querying images from a repository.
     """
 
-    def __init__(self, query_impl):
+    def __init__(self, model=None, session=None, query_impl=None):
         self.specs = []
         self.orders = {}
         self.joins = []
+        self.join_filters = []
+        self.model = model
+        self.session = session
         self.impl = query_impl
-        self.model = None
 
     def __call__(self, model, session=None):
-        self.model = model
-        self.specs = []
-        self.orders = {}
-        self.joins = []
-        self.session = session
-        return self
+        return Query(model, session, self.impl)
 
     def call_impl(func):
         def wrapper(self, *args):
@@ -160,7 +157,9 @@ class Query(object):
         self.join_filters.append((join_name, spec))
         return self
 
-    def joinload(self, model, key):
+    def joinload(self, key, model=None):
+        if model is None:
+            model = self.model
         self.joins.append((model, key))
         return self
 
