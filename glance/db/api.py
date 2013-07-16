@@ -304,11 +304,9 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                       an admin the equivalent set of images which it would see
                       if it were a regular user
     """
-    print "getting all!"
     query = get_query(models.Image)
 
     if (not context.is_admin) or admin_as_user == True:
-        print "yay"
         visibility_filters = [ Attr('is_public', EQ(True)) ]
         member_filters = [ Attr('members.deleted', EQ(False)) ]
         
@@ -398,18 +396,10 @@ def image_get_all(context, filters=None, marker=None, limit=None,
 
     query = query.joinload('properties').joinload('locations')
 
-    print "sort_key:"
-    print sort_key
     images = _paginate_query(query, models.Image, limit,
                             [sort_key, 'created_at', 'id'],
                             marker=marker_image,
                             sort_dir=sort_dir)
-
-    # for debug purposes only
-    # images = query.all()
-    # print "Images!!"
-    # print images
-    # print len(images)
 
     return [_normalize_locations(image.to_dict()) for image in images]
 
