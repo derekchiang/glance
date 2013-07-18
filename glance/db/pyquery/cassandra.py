@@ -12,6 +12,10 @@ pool = None  # Need to be set up
 
 
 class CassandraQueryImpl(QueryImplementation):
+    @classmethod
+    def translate_spec(cls, model, spec):
+        pass
+
 
     def first(self, model, specs, joins, orders):
         self.fetch(specs, joins, orders, 1)

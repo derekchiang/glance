@@ -32,9 +32,9 @@ class ManyToOne(Relation):
 class ManyToMany(Relation):
     pass
 
-def add_relation(relation):
-    relation.modelA.add_relation(relation)
-    relation.modelB.add_relation(relation)
+# def add_relation(relation):
+#     relation.modelA.add_relation(relation)
+#     relation.modelB.add_relation(relation)
 
 class RelationRepo(object):
     def __init__(self):
