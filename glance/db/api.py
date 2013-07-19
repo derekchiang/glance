@@ -723,7 +723,7 @@ def image_tag_delete(context, image_id, value, session=None):
                    .filter(value=value)\
                    .filter(deleted=False)
     try:
-        tag_ref = query.one()
+        tag_ref = query.first()
     except exceptions.NoResultFoundError:
         raise exception.NotFound()
 
