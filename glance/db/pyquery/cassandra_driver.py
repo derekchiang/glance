@@ -1,68 +1,47 @@
 from query import QueryImplementation
-from relations import OneToOne, OneToMany, ManyToOne, ManyToMany
-from spec import *
-from model import Model
 
-from sqlalchemy.orm import joinedload
-from sqlalchemy import asc, desc
-from sqlalchemy import not_, or_, and_
+from pycassa.columnfamilymap import ColumnFamilyMap
+# from pycassa.index import create_index_expression, create_index_clause
+import pycassa.index as index
+from pycassa.index import create_index_clause, create_index_expression
 
-from glance.db.pyquery.exceptions import UnsupportedSpecError, InvalidOrderException
+from spec import Attr, EQ, GT, LT, GTE, LTE, NEQ, And, Or
 
-from glance.db.sqlalchemy.exceptions import InvalidSpecError
-from glance.db.sqlalchemy.api import _get_session
-from glance.db.models import get_related_model
+# TODO: set it up
+pool = None
 
-# engine = None  # Need to be set up
-# Session = sessionmaker()
-# Session.configure(bind=engine)
-# session = _get_session()
-
-class SQLAlchemyQueryImpl(QueryImplementation):
-
-    query = None
-
+class CassandraQueryImpl(QueryImplementation):
     @classmethod
     def translate_spec(cls, model, spec):
-        if isinstance(spec, Attr):
-            attr = spec.attr
+        expressions = []
 
-            # To deal with join queries like `members.name == "Derek"`
-            if '.' in spec.attr:
-                parts = spec.attr.split('.')
-                ref_name = parts[0]
-                attr = parts[1]
-                model = get_related_model(model, ref_name)
-                assert model is not None
-                cls.query = cls.query.outerjoin(ref_name)
-
+        for spec in specs:
             if isinstance(spec.value_spec, EQ):
-                return (getattr(model, attr) == spec.value_spec.value)
-            elif isinstance(spec.value_spec, NEQ):
-                return (getattr(model, attr) != spec.value_spec.value)  
+                expressions.push(
+                    create_index_expression(spec.attr, spec.value_spec.value))
             elif isinstance(spec.value_spec, GT):
-                return (getattr(model, attr) > spec.value_spec.value)
+                expressions.push(create_index_expression(
+                    spec.attr, spec.value_spec.value, index.GT))
             elif isinstance(spec.value_spec, LT):
-                return (getattr(model, attr) < spec.value_spec.value)
+                expressions.push(create_index_expression(
+                    spec.attr, spec.value_spec.value, index.LT))
             elif isinstance(spec.value_spec, GTE):
-                return (getattr(model, attr) >= spec.value_spec.value)
+                expressions.push(create_index_expression(
+                    spec.attr, spec.value_spec.value, index.GTE))
             elif isinstance(spec.value_spec, LTE):
-                return (getattr(model, attr) <= spec.value_spec.value)
-            else:
-                raise UnsupportedSpecError('WTF did you give me?')
-        elif isinstance(spec, Not):
-            return not_(cls.translate_spec(model, spec.spec))
-        else:
-            lst = []
-            for sub_spec in spec.specs:
-                lst.append(cls.translate_spec(model, sub_spec))
-            if isinstance(spec, And):
-                return and_(*lst)
-            elif isinstance(spec, Or):
-                return or_(*lst)
-            else:
-                raise InvalidSpecError()
+                expressions.push(create_index_expression(
+                    spec.attr, spec.value_spec.value, index.LTE))
 
+        cfm = ColumnFamilyMap(model, pool, model.cf_name)
+        clause = create_index_clause([state_expr, bday_expr], count=number)
+
+        def value_only(lst):
+            values = []
+            for key, value in lst:
+                values.push(value)
+            return values
+
+        return value_only(cfm.get_indexed_slices(clause))
 
     @classmethod
     def first(cls, *args, **kwargs):
@@ -73,12 +52,12 @@ class SQLAlchemyQueryImpl(QueryImplementation):
 
     @classmethod
     def fetch(cls, *args, **kwargs):
-        number = None
-        if len(args) > 0:
-            number = args[0]
-        else:
-            number = kwargs['number']
-        return cls.all(*args, **kwargs)[:number]
+        model = kwargs['model']
+        specs = kwargs['specs']
+        joins = kwargs['joins']
+        orders = kwargs['orders']
+        join_filters = kwargs.get('join_filters')
+
 
     @classmethod
     def all(cls, *args, **kwargs):
@@ -148,3 +127,6 @@ class SQLAlchemyQueryImpl(QueryImplementation):
             session.add(i)
 
         session.commit()
+
+class InvertedIndicesRepo(object):
+    
