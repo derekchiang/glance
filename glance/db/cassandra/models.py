@@ -20,7 +20,10 @@
 SQLAlchemy models for glance data
 """
 from pycassa.types import DateType, IntegerType, UTF8Type, \
-                          BooleanType, CassandraType
+                          BooleanType, CassandraType, LexicalUUIDType
+from pycassa.columnfamilymap import ColumnFamilyMap
+from pycassa.columnfamily import ColumnFamily
+from pycassa.cassandra.ttypes import NotFoundException
 
 from glance.openstack.common import timeutils
 from glance.openstack.common import uuidutils
@@ -29,8 +32,8 @@ from glance.db.pyquery.model import Model
 
 import pickle
 
-# from glance.db import models
-
+# TODO: set it up
+pool = None
 
 class SerializableClass(object):
     def __init__(self, **kwargs):
@@ -114,6 +117,7 @@ class ArrayType(CassandraType):
 
 class Image(object):
     """Represents an image in the datastore"""
+    key = LexicalUUIDType()
     id = UTF8Type()
     name = UTF8Type()
     disk_format = UTF8Type()
@@ -142,6 +146,61 @@ class Image(object):
         self.created_at = timeutils.utcnow()
         self.updated_at = timeutils.utcnow()
 
+    def to_dict(self):
+        d = self.__dict__.copy()
+        # NOTE(flaper87): Remove
+        # private state instance
+        # It is not serializable
+        # and causes CircularReference
+        d.pop("_sa_instance_state")
+        return d
+
+    def save(self):
+        cls = self.__class__    
+    
+        related_cfs = secondary_index_repo.get_related_cf(cls)
+        for target_cf, target_field, target_index_field,\
+            index_cf, index_field, cf_name in related_cfs:
+            
+            cf = ColumnFamily(pool, cf_name)
+            
+            if cls == target_cf:
+                for child in getattr(self, target_index_field):
+                    row_key = getattr(child, index_field)
+                    column_val = getattr(self, target_field)
+            elif cls == index_cf:
+                for child in getattr(self, target_index_field):
+                    row_key = getattr(self, index_field)
+                    if (target_field == 'all'):
+                        column_val = getattr(self, target_field)
+            
+            try:
+                original_value = cf.get(row_key)
+                cf.insert({
+                    row_key: dict(original_value, **{column_val: ''})
+                    })
+            except:
+                cf.insert({
+                    row_key: {column_val: ''}
+                    })
+
+
+        cfm = ColumnFamilyMap(cls)
+        cfm.insert(self)
+
+        # for child in getattr(self, child_name): 
+        #     row_key = getattr(child, row_key_name)
+        #     column_val = getattr(self, column_key)
+        #     try:
+        #         original_value = cf.get(row_key)
+        #         cf.insert({
+        #             row_key: dict(original_value, **{column_val: ''})
+        #             })
+        #     except NotFoundException:
+        #         cf.insert({
+        #             row_key: {column_val: ''}
+        #             })
+
 def register_models(engine):
     """
     Creates database tables for all models with the given engine
@@ -158,3 +217,28 @@ def unregister_models(engine):
     models = (Image, ImageProperty)
     for model in models:
         model.metadata.drop_all(engine)
+
+
+secondary_index_repo = SecondaryIndexRepo()
+secondary_index_repo.add(Image, 'id', 'members', ImageMember, 'member',\
+    'image_ids_by_image_member_member')
+secondary_index_repo.add(Image, 'id', 'members', ImageMember, 'status',\
+    'image_ids_by_image_member_status')
+secondary_index_repo.add(Image, 'id', ImageMember, 'deleted',\
+    'image_ids_by_image_member_deleted')
+secondary_index_repo.add(Image, 'id', ImageProperty, 'name',\
+    'image_ids_by_image_property_name')
+secondary_index_repo.add(Image, 'id', ImageProperty, 'value',\
+    'image_ids_by_image_property_value')
+secondary_index_repo.add(Image, 'id', ImageProperty, 'deleted',\
+    'image_ids_by_image_property_deleted')
+secondary_index_repo.add(Image, 'id', ImageLocation, 'image_id',\
+    'image_ids_by_image_location_image_id')
+secondary_index_repo.add(Image, 'id', ImageLocation, 'deleted',\
+    'image_ids_by_image_location_deleted')
+secondary_index_repo.add(ImageMember, 'all', Image, 'owner',\
+    'image_members_by_image_owner')
+secondary_index_repo.add(ImageTag, 'all', ImageTag, 'image_id',\
+    'image_tags_by_image_tag_image_id')
+secondary_index_repo.add(ImageTag, 'all', ImageTag, 'deleted',\
+    'image_tags_by_image_tag_deleted')
