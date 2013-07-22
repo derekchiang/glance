@@ -115,6 +115,14 @@ class ArrayType(CassandraType):
             res.push(item.unpack())
         return res
 
+
+def get_row_key(k, v):
+    """Concatenate k and v to get a string suitable to use
+    as a row key in Cassandra
+    """
+    return str(k) + ' = ' + str(v)
+
+
 class Image(object):
     """Represents an image in the datastore"""
     key = LexicalUUIDType()
@@ -156,33 +164,50 @@ class Image(object):
         return d
 
     def save(self):
-        cls = self.__class__    
+        cls = self.__class__
+
+        # Populate related secondary index tables
+        for field, cf in secondary_index_repo.get_related(cls):
+            child = getattr(self, field)
+            d = child.to_dict()
+            for k, v in d.iteritems():
+                row_key = get_row_key(k, v)
+                try:
+                    original_value = cf.get(row_key)
+                    cf.insert({
+                        row_key: dict(original_value, **{self.key: ''})
+                        })
+                except NotFoundException:
+                    cf.insert({
+                        row_key: {self.key: ''}
+                        })
+
     
-        related_cfs = secondary_index_repo.get_related_cf(cls)
-        for target_cf, target_field, target_index_field,\
-            index_cf, index_field, cf_name in related_cfs:
+        # related_cfs = secondary_index_repo.get_related_cf(cls)
+        # for target_cf, target_field, target_index_field,\
+        #     index_cf, index_field, cf_name in related_cfs:
             
-            cf = ColumnFamily(pool, cf_name)
+        #     cf = ColumnFamily(pool, cf_name)
             
-            if cls == target_cf:
-                for child in getattr(self, target_index_field):
-                    row_key = getattr(child, index_field)
-                    column_val = getattr(self, target_field)
-            elif cls == index_cf:
-                for child in getattr(self, target_index_field):
-                    row_key = getattr(self, index_field)
-                    if (target_field == 'all'):
-                        column_val = getattr(self, target_field)
+        #     if cls == target_cf:
+        #         for child in getattr(self, target_index_field):
+        #             row_key = getattr(child, index_field)
+        #             column_val = getattr(self, target_field)
+        #     elif cls == index_cf:
+        #         for child in getattr(self, target_index_field):
+        #             row_key = getattr(self, index_field)
+        #             if (target_field == 'all'):
+        #                 column_val = getattr(self, target_field)
             
-            try:
-                original_value = cf.get(row_key)
-                cf.insert({
-                    row_key: dict(original_value, **{column_val: ''})
-                    })
-            except:
-                cf.insert({
-                    row_key: {column_val: ''}
-                    })
+        #     try:
+        #         original_value = cf.get(row_key)
+        #         cf.insert({
+        #             row_key: dict(original_value, **{column_val: ''})
+        #             })
+        #     except:
+        #         cf.insert({
+        #             row_key: {column_val: ''}
+        #             })
 
 
         cfm = ColumnFamilyMap(cls)
@@ -219,26 +244,34 @@ def unregister_models(engine):
         model.metadata.drop_all(engine)
 
 
+class SecondaryIndexRepo(object):
+    def __init__(self):
+        self.repo = []
+
+    def add(self, *args):
+        self.repo.append(*args)
+
+    def get(self, cls):
+        for r in self.repo:
+            if (r[0] == cls) or (r[3] == cls):
+                yield r
+
 secondary_index_repo = SecondaryIndexRepo()
 secondary_index_repo.add(Image, 'id', 'members', ImageMember, 'member',\
     'image_ids_by_image_member_member')
 secondary_index_repo.add(Image, 'id', 'members', ImageMember, 'status',\
     'image_ids_by_image_member_status')
-secondary_index_repo.add(Image, 'id', ImageMember, 'deleted',\
+secondary_index_repo.add(Image, 'id', 'members', ImageMember, 'deleted',\
     'image_ids_by_image_member_deleted')
-secondary_index_repo.add(Image, 'id', ImageProperty, 'name',\
+secondary_index_repo.add(Image, 'id', 'properties', ImageProperty, 'name',\
     'image_ids_by_image_property_name')
-secondary_index_repo.add(Image, 'id', ImageProperty, 'value',\
+secondary_index_repo.add(Image, 'id', 'properties', ImageProperty, 'value',\
     'image_ids_by_image_property_value')
-secondary_index_repo.add(Image, 'id', ImageProperty, 'deleted',\
+secondary_index_repo.add(Image, 'id', 'properties', ImageProperty, 'deleted',\
     'image_ids_by_image_property_deleted')
-secondary_index_repo.add(Image, 'id', ImageLocation, 'image_id',\
+secondary_index_repo.add(Image, 'id', 'locations', ImageLocation, 'image_id',\
     'image_ids_by_image_location_image_id')
-secondary_index_repo.add(Image, 'id', ImageLocation, 'deleted',\
+secondary_index_repo.add(Image, 'id', 'locations', ImageLocation, 'deleted',\
     'image_ids_by_image_location_deleted')
-secondary_index_repo.add(ImageMember, 'all', Image, 'owner',\
+secondary_index_repo.add(ImageMember, 'all', 'members', Image, 'owner',\
     'image_members_by_image_owner')
-secondary_index_repo.add(ImageTag, 'all', ImageTag, 'image_id',\
-    'image_tags_by_image_tag_image_id')
-secondary_index_repo.add(ImageTag, 'all', ImageTag, 'deleted',\
-    'image_tags_by_image_tag_deleted')
