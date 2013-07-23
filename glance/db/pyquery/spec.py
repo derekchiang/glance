@@ -35,9 +35,20 @@ class Attr(object):
         self.value_spec = value_spec
 
     def match(self, obj):
-        value = getattr(obj, self.attr, None)
-        if value is None:
-            value = obj.get(self.attr)
+
+        def get_attr(obj, attr):
+            if isinstance(obj, dict):
+                return obj.get(attr)
+            else:
+                return getattr(obj, attr, None)
+
+        value = None
+        if '.' in self.attr:
+            parts = self.attr.split('.')
+            value = get_attr(get_attr(obj, parts[0]), parts[1])
+        else:
+            value = get_attr(obj, self.attr)
+
         return self.value_spec.match(value)
 
 

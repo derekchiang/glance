@@ -27,7 +27,6 @@ import glance.openstack.common.log as os_logging
 from glance.openstack.common import timeutils
 from glance.openstack.common.gettextutils import _
 from pyquery.query import Query
-from pyquery.sqlalchemy_driver import SQLAlchemyQueryImpl
 from pyquery.spec import Attr, EQ, GT, LT, And, Or, NEQ, inspect_attr
 
 _ENGINE = None
@@ -56,7 +55,7 @@ clear_db_env = backend.api.clear_db_env
 def get_session():
     return backend.api._get_session()
 
-get_query = Query(query_impl=SQLAlchemyQueryImpl)
+get_query = Query(query_impl=backend.query_impl)
 
 def _check_mutate_authorization(context, image_ref):
     if not is_image_mutable(context, image_ref):
