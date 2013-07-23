@@ -29,6 +29,7 @@ from glance.openstack.common import timeutils
 from glance.openstack.common import uuidutils
 
 from glance.db.pyquery.model import Model
+from glance.db.pyquery.spec import Attr, EQ
 
 import pickle
 
@@ -125,6 +126,8 @@ def get_row_key(k, v):
 
 class Image(object):
     """Represents an image in the datastore"""
+    cf_name = 'image'
+
     key = LexicalUUIDType()
     id = UTF8Type()
     name = UTF8Type()
@@ -149,10 +152,13 @@ class Image(object):
     locations = ArrayType()
     members = ArrayType()
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         self.id = uuidutils.generate_uuid()
         self.created_at = timeutils.utcnow()
         self.updated_at = timeutils.utcnow()
+
+        for k, v in kwargs.iteritems():
+            setattr(self, k, v)
 
     def to_dict(self):
         d = self.__dict__.copy()
@@ -167,7 +173,7 @@ class Image(object):
         cls = self.__class__
 
         # Populate related secondary index tables
-        for field, cf in secondary_index_repo.get_related(cls):
+        for field, cf in secondary_index_repo.get(cls):
             child = getattr(self, field)
             d = child.to_dict()
             for k, v in d.iteritems():
@@ -182,6 +188,8 @@ class Image(object):
                         row_key: {self.key: ''}
                         })
 
+        cfm = ColumnFamilyMap(cls, pool)
+        cfm.insert(self)
     
         # related_cfs = secondary_index_repo.get_related_cf(cls)
         # for target_cf, target_field, target_index_field,\
@@ -209,10 +217,6 @@ class Image(object):
         #             row_key: {column_val: ''}
         #             })
 
-
-        cfm = ColumnFamilyMap(cls)
-        cfm.insert(self)
-
         # for child in getattr(self, child_name): 
         #     row_key = getattr(child, row_key_name)
         #     column_val = getattr(self, column_key)
@@ -226,24 +230,6 @@ class Image(object):
         #             row_key: {column_val: ''}
         #             })
 
-def register_models(engine):
-    """
-    Creates database tables for all models with the given engine
-    """
-    models = (Image, ImageProperty, ImageMember)
-    for model in models:
-        model.metadata.create_all(engine)
-
-
-def unregister_models(engine):
-    """
-    Drops database tables for all models with the given engine
-    """
-    models = (Image, ImageProperty)
-    for model in models:
-        model.metadata.drop_all(engine)
-
-
 class SecondaryIndexRepo(object):
     def __init__(self):
         self.repo = []
@@ -253,25 +239,34 @@ class SecondaryIndexRepo(object):
 
     def get(self, cls):
         for r in self.repo:
-            if (r[0] == cls) or (r[3] == cls):
-                yield r
+            if r[0] == cls:
+                cf_name = r[3]
+                cf = ColumnFamily(pool, cf_name)
+                yield (r[1], cf)
+
+
+    def get_data(self, cls, spec):
+        assert (isinstance(spec, Attr) and isinstance(spec.value_spec, EQ))
+        for r in self.repo:
+            if r[2] == cls:
+                cf_name = r[3]
+                cf = ColumnFamily(pool, cf_name)
+                d = cf.get(get_row_key(spec.attr, spec.value_spec.value))
+                
+                results = []
+                for k, v in d.iteritems():
+                    results.append(k)
+                
+                return r[0], results, r[1]
+
+        raise Exception('The given class is not defined in this\
+                         secondary index repo.')
+
 
 secondary_index_repo = SecondaryIndexRepo()
-secondary_index_repo.add(Image, 'id', 'members', ImageMember, 'member',\
-    'image_ids_by_image_member_member')
-secondary_index_repo.add(Image, 'id', 'members', ImageMember, 'status',\
-    'image_ids_by_image_member_status')
-secondary_index_repo.add(Image, 'id', 'members', ImageMember, 'deleted',\
-    'image_ids_by_image_member_deleted')
-secondary_index_repo.add(Image, 'id', 'properties', ImageProperty, 'name',\
-    'image_ids_by_image_property_name')
-secondary_index_repo.add(Image, 'id', 'properties', ImageProperty, 'value',\
-    'image_ids_by_image_property_value')
-secondary_index_repo.add(Image, 'id', 'properties', ImageProperty, 'deleted',\
-    'image_ids_by_image_property_deleted')
-secondary_index_repo.add(Image, 'id', 'locations', ImageLocation, 'image_id',\
-    'image_ids_by_image_location_image_id')
-secondary_index_repo.add(Image, 'id', 'locations', ImageLocation, 'deleted',\
-    'image_ids_by_image_location_deleted')
-secondary_index_repo.add(ImageMember, 'all', 'members', Image, 'owner',\
-    'image_members_by_image_owner')
+secondary_index_repo.add(Image, 'members', ImageMember,\
+                         'images_by_image_member')
+secondary_index_repo.add(Image, 'properties', ImageProperty,\
+                         'images_by_image_property')
+secondary_index_repo.add(Image, 'locations', ImageLocation,\
+                         'images_by_image_location')
