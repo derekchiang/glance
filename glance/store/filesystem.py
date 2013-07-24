@@ -116,6 +116,7 @@ class Store(glance.store.base.Store):
         itself, it should raise `exception.BadStoreConfiguration`
         """
         self.datadir = CONF.filesystem_store_datadir
+        LOG.info(CONF)
         if self.datadir is None:
             reason = (_("Could not find %s in configuration options.") %
                       'filesystem_store_datadir')

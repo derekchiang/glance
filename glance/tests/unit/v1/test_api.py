@@ -21,6 +21,7 @@ import datetime
 import hashlib
 import json
 import StringIO
+import time
 
 from oslo.config import cfg
 import routes
@@ -33,8 +34,7 @@ from glance.api.v1 import images
 from glance.api.v1 import router
 import glance.common.config
 import glance.context
-from glance.db.sqlalchemy import api as db_api
-from glance.db.sqlalchemy import models as db_models
+from glance.db import get_backend
 from glance.openstack.common import timeutils
 from glance.openstack.common import uuidutils
 import glance.store.filesystem
@@ -48,6 +48,8 @@ _gen_uuid = uuidutils.generate_uuid
 UUID1 = _gen_uuid()
 UUID2 = _gen_uuid()
 
+db_api = get_backend('api')
+db_models = get_backend('models')
 
 class TestGlanceAPI(base.IsolatedUnitTest):
     def setUp(self):
@@ -85,10 +87,11 @@ class TestGlanceAPI(base.IsolatedUnitTest):
              'locations': ["file:///%s/%s" % (self.test_dir, UUID2)],
              'properties': {}}]
         self.context = glance.context.RequestContext(is_admin=True)
+
+        t1 = time.time()
         db_api.setup_db_env()
-        db_api.get_engine()
-        self.destroy_fixtures()
-        self.create_fixtures()
+        t2 = time.time()
+        print "setup time: %0.3f" % ((t2 - t1) * 1000.0)
 
     def tearDown(self):
         """Clear the test environment"""
@@ -105,8 +108,10 @@ class TestGlanceAPI(base.IsolatedUnitTest):
 
     def destroy_fixtures(self):
         # Easiest to just drop the models and re-create them...
-        db_models.unregister_models(db_api._ENGINE)
-        db_models.register_models(db_api._ENGINE)
+        t1 = time.time()
+        db_api.clear_db_env()
+        t2 = time.time()
+        print "teardown time: %0.3f" % ((t2 - t1) * 1000.0)
 
     def _do_test_defaulted_format(self, format_key, format_value):
         fixture_headers = {'x-image-meta-name': 'defaulted',

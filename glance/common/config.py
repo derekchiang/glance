@@ -47,7 +47,7 @@ common_opts = [
                 'beyond what the image schema provides')),
     cfg.StrOpt('data_api', default='glance.db.api',
                help=_('Python module path of data access API')),
-    cfg.StrOpt('data_backend', default='glance.db.sqlalchemy',
+    cfg.StrOpt('data_backend', default='glance.db.cassandra',
                help=_('Python module path of data access API')),
     cfg.IntOpt('limit_param_default', default=25,
                help=_('Default value for the number of items returned by a '

@@ -30,7 +30,7 @@ from glance.tests import utils as test_utils
 
 CONF = cfg.CONF
 CONF.import_opt('filesystem_store_datadir', 'glance.store.filesystem')
-CONF.import_opt('sql_connection', 'glance.db.sqlalchemy.api')
+# CONF.import_opt('sql_connection', 'glance.db.sqlalchemy.api')
 
 
 class StoreClearingUnitTest(test_utils.BaseTestCase):
@@ -56,12 +56,13 @@ class IsolatedUnitTest(StoreClearingUnitTest):
         self.test_dir = self.useFixture(fixtures.TempDir()).path
         self.stubs = stubout.StubOutForTesting()
         policy_file = self._copy_data_file('policy.json', self.test_dir)
-        self.config(sql_connection='sqlite://',
-                    verbose=False,
+        print 'setting up options'
+        self.config(verbose=False,
                     debug=False,
                     default_store='filesystem',
                     filesystem_store_datadir=os.path.join(self.test_dir),
                     policy_file=policy_file)
+        print cfg.CONF.filesystem_store_datadir
         stubs.stub_out_registry_and_store_server(self.stubs,
                                                  self.test_dir,
                                                  registry=self.registry)
