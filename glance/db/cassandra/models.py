@@ -21,8 +21,8 @@ SQLAlchemy models for glance data
 """
 from pycassa.types import DateType, IntegerType, UTF8Type, \
                           BooleanType, CassandraType
-from pycassa.system_manager import SystemManager, SIMPLE_STRATEGY
-                            # UTF8Type, IntegerType, BooleanType, DateType
+from pycassa.system_manager import SystemManager, SIMPLE_STRATEGY, \
+                            UTF8_TYPE, INT_TYPE, BOOLEAN_TYPE, DATE_TYPE
 
 from pycassa.columnfamilymap import ColumnFamilyMap
 from pycassa.columnfamily import ColumnFamily
@@ -160,10 +160,10 @@ class Image(Model):
     deleted_at = DateType()
     deleted = BooleanType(default=False)
 
-    properties = ArrayType()
-    tags = ArrayType()
-    locations = ArrayType()
-    members = ArrayType()
+    properties = ArrayType(default=[])
+    tags = ArrayType(default=[])
+    locations = ArrayType(default=[])
+    members = ArrayType(default=[])
 
     def __init__(self, **kwargs):
         self.id = uuidutils.generate_uuid()
@@ -306,28 +306,32 @@ def register_models():
         sys.create_keyspace(KEYSPACE_NAME, SIMPLE_STRATEGY, {'replication_factor': '1'})
 
         image_validators = {
-            'id': UTF8Type,
-            'name': UTF8Type,
-            'disk_format': UTF8Type,
-            'container_format': UTF8Type,
-            'size': IntegerType,
-            'status': UTF8Type,
-            'is_public': BooleanType,
-            'checksum': UTF8Type,
-            'min_disk': IntegerType,
-            'min_ram': IntegerType,
-            'owner': UTF8Type,
-            'protected': BooleanType,
-            'created_at': DateType,
-            'updated_at': DateType,
-            'deleted_at': DateType,
-            'deleted': BooleanType
+            'id': UTF8Type(),
+            'name': UTF8Type(),
+            'disk_format': UTF8Type(),
+            'container_format': UTF8Type(),
+            'size': IntegerType(),
+            'status': UTF8Type(),
+            'is_public': BooleanType(),
+            'checksum': UTF8Type(),
+            'min_disk': IntegerType(),
+            'min_ram': IntegerType(),
+            'owner': UTF8Type(),
+            'protected': BooleanType(),
+            'created_at': DateType(),
+            'updated_at': DateType(),
+            'deleted_at': DateType(),
+            'deleted': BooleanType()
         }
 
         sys.create_column_family(KEYSPACE_NAME, 'Images',
-                                comparator_type=UTF8Type,
-                                key_validation_class=UTF8Type, 
+                                comparator_type=UTF8Type(),
+                                key_validation_class=UTF8Type(), 
                                 column_validation_classes=image_validators)
+
+        # Create indices on columns
+        sys.create_index(KEYSPACE_NAME, 'Images', 'id', 'UTF8Type')
+
         sys.create_column_family(KEYSPACE_NAME, 'Images_By_Image_Member')
         sys.create_column_family(KEYSPACE_NAME, 'Images_By_Image_Property')
         sys.create_column_family(KEYSPACE_NAME, 'Images_By_Image_Location')

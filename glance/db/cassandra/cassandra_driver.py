@@ -65,9 +65,11 @@ class CassandraQueryImpl(QueryImplementation):
                 else:
                     expressions.append(cls.translate_spec(spec))
                 
+                print model.cf_name
+                print expressions
                 clause = create_index_clause(expressions)
-                for v in cls.value_only(cfm.get_indexed_slices(clause)):
-                    yield v
+                for k in cfm.get_indexed_slices(clause):
+                    yield k
 
             else:
                 cfm, parents, related_name = secondary_index_repo.get_data(model, spec)
