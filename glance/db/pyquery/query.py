@@ -81,15 +81,7 @@ class Query(object):
 
     def call_impl(func):
         def wrapper(self, *args):
-            if self.model.is_standalone:
-                return getattr(self.impl, func.__name__)(*args, **self.__dict__)
-            else:
-                for rel in self.model.relations:
-                    result = getattr(rel, func.__name__)(*args, **self.__dict__)
-                    if result is not None:
-                        return result
-
-                return None
+            return getattr(self.impl, func.__name__)(*args, **self.__dict__)
         return wrapper
 
     def filter(self, *args, **kwargs):

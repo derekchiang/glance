@@ -1,12 +1,12 @@
 # TODO: move these functions to a more appropriate place
 
-from glance.db.cassandra.models import register_models
+from glance.db.cassandra.models import register_models, unregister_models
 
 def setup_db_env():
     register_models()
 
 def clear_db_env():
-    pass
+    unregister_models()
 
 def _get_session():
     class DummySession(object):

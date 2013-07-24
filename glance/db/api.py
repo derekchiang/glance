@@ -106,7 +106,15 @@ def image_destroy(context, image_id):
 
 
 def _normalize_locations(image):
-    undeleted_locations = filter(lambda x: not x.deleted, image['locations'])
+    # Cassandra would return locations as dictionaries, SQLAlchemy as objects
+    def get_attribute(obj, kw):
+        if isinstance(obj, dict):
+            return obj[kw]
+        else:
+            return getattr(obj, kw)
+
+    undeleted_locations = filter(lambda x: not get_attribute(x, 'deleted'),\
+        image['locations'])
     image['locations'] = [loc['value'] for loc in undeleted_locations]
     return image
 
@@ -117,6 +125,9 @@ def image_get(context, image_id, session=None, force_show_deleted=False):
     image = _image_get(context, image_id, session=session,
                        force_show_deleted=force_show_deleted)
     image = _normalize_locations(image.to_dict())
+
+    print "was here 4"
+    print image
     return image
 
 
@@ -501,6 +512,7 @@ def _image_update(context, values, image_id, purge_props=False):
         _update_values(image_ref, values)
 
         try:
+            print 'saving'
             image_ref.save(session=session)
         # TODO: shouldn't 
         except exceptions.DuplicateKeyError:
