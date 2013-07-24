@@ -20,21 +20,27 @@
 SQLAlchemy models for glance data
 """
 from pycassa.types import DateType, IntegerType, UTF8Type, \
-                          BooleanType, CassandraType, LexicalUUIDType
+                          BooleanType, CassandraType
+from pycassa.system_manager import SystemManager, SIMPLE_STRATEGY
+                            # UTF8Type, IntegerType, BooleanType, DateType
+
 from pycassa.columnfamilymap import ColumnFamilyMap
 from pycassa.columnfamily import ColumnFamily
 from pycassa.cassandra.ttypes import NotFoundException
+from pycassa import ConnectionPool
 
 from glance.openstack.common import timeutils
 from glance.openstack.common import uuidutils
 
-from glance.db.pyquery.model import Model
 from glance.db.pyquery.spec import Attr, EQ
+from glance.db.pyquery.model import Model
 
 import pickle
 
 # TODO: set it up
+KEYSPACE_NAME = 'GLANCE'
 pool = None
+sys = None
 
 class SerializableClass(object):
     def __init__(self, **kwargs):
@@ -52,6 +58,8 @@ class SerializableClass(object):
 
 class SerializableModelBase(SerializableClass):
     """Base class for Nova and Glance Models"""
+    is_standalone = False
+
     def to_dict(self):
         return {
             'created_at': self.created_at,
@@ -116,6 +124,11 @@ class ArrayType(CassandraType):
             res.push(item.unpack())
         return res
 
+    # Just so that this becomes iterable
+    def __iter__(self):
+        return
+        yield
+
 
 def get_row_key(k, v):
     """Concatenate k and v to get a string suitable to use
@@ -124,11 +137,11 @@ def get_row_key(k, v):
     return str(k) + ' = ' + str(v)
 
 
-class Image(object):
+class Image(Model):
     """Represents an image in the datastore"""
-    cf_name = 'image'
+    cf_name = 'Images'
 
-    key = LexicalUUIDType()
+    key = UTF8Type()
     id = UTF8Type()
     name = UTF8Type()
     disk_format = UTF8Type()
@@ -162,33 +175,32 @@ class Image(object):
 
     def to_dict(self):
         d = self.__dict__.copy()
-        # NOTE(flaper87): Remove
-        # private state instance
-        # It is not serializable
-        # and causes CircularReference
-        d.pop("_sa_instance_state")
         return d
 
-    def save(self):
+    def save(self, session=None):
         cls = self.__class__
 
         # Populate related secondary index tables
         for field, cf in secondary_index_repo.get(cls):
-            child = getattr(self, field)
-            d = child.to_dict()
-            for k, v in d.iteritems():
-                row_key = get_row_key(k, v)
-                try:
-                    original_value = cf.get(row_key)
-                    cf.insert({
-                        row_key: dict(original_value, **{self.key: ''})
-                        })
-                except NotFoundException:
-                    cf.insert({
-                        row_key: {self.key: ''}
-                        })
+            children = getattr(self, field)
 
-        cfm = ColumnFamilyMap(cls, pool)
+            for child in children:
+                print child
+                d = child.to_dict()
+                for k, v in d.iteritems():
+                    row_key = get_row_key(k, v)
+                    try:
+                        original_value = cf.get(row_key)
+                        cf.insert({
+                            row_key: dict(original_value, **{self.key: ''})
+                            })
+                    except NotFoundException:
+                        cf.insert({
+                            row_key: {self.key: ''}
+                            })
+
+        cfm = ColumnFamilyMap(cls, pool, cls.cf_name)
+        self.key = self.id
         cfm.insert(self)
     
         # related_cfs = secondary_index_repo.get_related_cf(cls)
@@ -230,12 +242,23 @@ class Image(object):
         #             row_key: {column_val: ''}
         #             })
 
+    def delete(self, session=None):
+        """Delete this object"""
+        self.deleted = True
+        self.deleted_at = timeutils.utcnow()
+        self.save()
+
+    def update(self, values):
+        """dict.update() behaviour."""
+        for k, v in values.iteritems():
+            setattr(self, k, v)
+
 class SecondaryIndexRepo(object):
     def __init__(self):
         self.repo = []
 
     def add(self, *args):
-        self.repo.append(*args)
+        self.repo.append(args)
 
     def get(self, cls):
         for r in self.repo:
@@ -257,7 +280,7 @@ class SecondaryIndexRepo(object):
                 for k, v in d.iteritems():
                     results.append(k)
                 
-                return r[0], results, r[1]
+                return ColumnFamilyMap(r[0], pool, r[0].cf_name), results, r[1]
 
         raise Exception('The given class is not defined in this\
                          secondary index repo.')
@@ -265,8 +288,56 @@ class SecondaryIndexRepo(object):
 
 secondary_index_repo = SecondaryIndexRepo()
 secondary_index_repo.add(Image, 'members', ImageMember,\
-                         'images_by_image_member')
+                         'Images_By_Image_Member')
 secondary_index_repo.add(Image, 'properties', ImageProperty,\
-                         'images_by_image_property')
+                         'Images_By_Image_Property')
 secondary_index_repo.add(Image, 'locations', ImageLocation,\
-                         'images_by_image_location')
+                         'Images_By_Image_Location')
+
+
+def register_models():
+    """
+    Creates database tables for all models with the given engine
+    """
+    global pool, sys
+    sys = SystemManager()
+
+    if KEYSPACE_NAME not in sys.list_keyspaces():
+        sys.create_keyspace(KEYSPACE_NAME, SIMPLE_STRATEGY, {'replication_factor': '1'})
+
+        image_validators = {
+            'id': UTF8Type,
+            'name': UTF8Type,
+            'disk_format': UTF8Type,
+            'container_format': UTF8Type,
+            'size': IntegerType,
+            'status': UTF8Type,
+            'is_public': BooleanType,
+            'checksum': UTF8Type,
+            'min_disk': IntegerType,
+            'min_ram': IntegerType,
+            'owner': UTF8Type,
+            'protected': BooleanType,
+            'created_at': DateType,
+            'updated_at': DateType,
+            'deleted_at': DateType,
+            'deleted': BooleanType
+        }
+
+        sys.create_column_family(KEYSPACE_NAME, 'Images',
+                                comparator_type=UTF8Type,
+                                key_validation_class=UTF8Type, 
+                                column_validation_classes=image_validators)
+        sys.create_column_family(KEYSPACE_NAME, 'Images_By_Image_Member')
+        sys.create_column_family(KEYSPACE_NAME, 'Images_By_Image_Property')
+        sys.create_column_family(KEYSPACE_NAME, 'Images_By_Image_Location')
+
+    pool = ConnectionPool(KEYSPACE_NAME)
+
+
+def unregister_models():
+    """
+    Drops database tables for all models with the given engine
+    """
+    global sys
+    sys.drop_keyspace(KEYSPACE_NAME)

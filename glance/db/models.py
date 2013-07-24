@@ -1,4 +1,3 @@
-from pyquery.model import Model
 from glance.db.pyquery.relations import RelationRepo, OneToMany
 from glance.db import get_backend
 

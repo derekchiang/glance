@@ -8,6 +8,9 @@ class Model(object):
     def save(self, session=None):
         pass
 
+    def update(self, values):
+        pass
+
     def delete(self, session=None):
         pass
 

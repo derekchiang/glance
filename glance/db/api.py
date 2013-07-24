@@ -44,7 +44,6 @@ STATUSES = ['active', 'saving', 'queued', 'killed', 'pending_delete',
 
 backend = get_backend()
 
-# TODO: why is this not working?
 exceptions = get_backend('exceptions')
 models = get_backend('models')
 

@@ -1,32 +1,27 @@
-from query import QueryImplementation
-
 from pycassa.columnfamilymap import ColumnFamilyMap
+from pycassa import ConnectionPool
 # from pycassa.index import create_index_expression, create_index_clause
 import pycassa.index as index
 from pycassa.index import create_index_clause, create_index_expression
-from glance.db.cassandra.models import Image, ImageLocation, ImageMember, \
-                                       ImageProperty, ImageTag
-
-from spec import Attr, EQ, GT, LT, GTE, LTE, NEQ, And, Or
-
+from glance.db.pyquery.spec import Attr, EQ, GT, LT, GTE, LTE, NEQ, And, Or
+from glance.db.pyquery.query import QueryImplementation
 from glance.db.models import get_related_model
+from glance.db.cassandra.models import secondary_index_repo
 
 # TODO: set it up
-pool = None
-
 class CassandraQueryImpl(QueryImplementation):
 
     @staticmethod
     def translate_spec(spec):
         if isinstance(spec.value_spec, EQ):
             return create_index_expression(spec.attr, spec.value_spec.value, index.EQ)
-        elif isinstance(sub_spec.value_spec, GT):
+        elif isinstance(spec.value_spec, GT):
             return create_index_expression(spec.attr, spec.value_spec.value, index.GT)
-        elif isinstance(sub_spec.value_spec, LT):
+        elif isinstance(spec.value_spec, LT):
             return create_index_expression(spec.attr, spec.value_spec.value, index.LT)
-        elif isinstance(sub_spec.value_spec, GTE):
+        elif isinstance(spec.value_spec, GTE):
             return create_index_expression(spec.attr, spec.value_spec.value, index.GTE)
-        elif isinstance(sub_spec.value_spec, LTE):
+        elif isinstance(spec.value_spec, LTE):
             return create_index_expression(spec.attr, spec.value_spec.value, index.LTE)
 
     @staticmethod
@@ -39,10 +34,18 @@ class CassandraQueryImpl(QueryImplementation):
     @classmethod
     def get_data(cls, model, spec, join_filter):
         # TODO: clean up this code
+
+        # TODO: currently, we use ids as keys.  One potential optimization
+        # would be to inspect if the client is filtering on ids, and if so,
+        # simply get all rows associated with those keys, rather than using
+        # column indices
+
+        pool = ConnectionPool('GLANCE')
+
         if join_filter:
             ref_name, spec = join_filter
             related_model = get_related_model(model, ref_name)
-            _, parents, _ = secondary_index_repo.get_data(related_model, spec)
+            cfm, parents, _ = secondary_index_repo.get_data(related_model, spec)
             for p in parents:
                 d = cfm.get(key=p)
                 yield d
@@ -53,22 +56,21 @@ class CassandraQueryImpl(QueryImplementation):
                 expressions = []
 
                 if isinstance(spec, Or):
-                    results = []
                     for sub_spec in spec.specs:
-                        results.extend(get_data(sub_spec))
-                    return results
+                        for i in cls.get_data(model, sub_spec, None):
+                            yield i
                 elif isinstance(spec, And):
                     for sub_spec in spec.specs:
-                        expressions.append(translate_spec(sub_spec))
+                        expressions.append(cls.translate_spec(sub_spec))
                 else:
-                    expressions.append(translate_spec(spec))
+                    expressions.append(cls.translate_spec(spec))
                 
                 clause = create_index_clause(expressions)
-                return value_only(cfm.get_indexed_slices(clause))
+                for v in cls.value_only(cfm.get_indexed_slices(clause)):
+                    yield v
 
             else:
-                parent_model, parents, related_name = secondary_index_repo.get_data(model, spec)
-                cfm = ColumnFamilyMap(parent_model, pool, parent_model.cf_name)
+                cfm, parents, related_name = secondary_index_repo.get_data(model, spec)
                 for p in parents:
                     d = cfm.get(key=p, columns=[related_name])
                     for child in d[related_name]:
@@ -100,7 +102,6 @@ class CassandraQueryImpl(QueryImplementation):
     def all(cls, *args, **kwargs):
         model = kwargs.get('model')
         specs = kwargs.get('specs')
-        joins = kwargs.get('joins')
         orders = kwargs.get('orders')
         join_filters = kwargs.get('join_filters')
 
@@ -124,15 +125,15 @@ class CassandraQueryImpl(QueryImplementation):
         # the database, and then use the rest of filters on
         # the client side
         if specs:
-            vals.extend(get_data(model, specs[0]))
+            vals.extend(cls.get_data(model, specs[0], None))
             specs = specs[1:]
 
         elif join_filters:
             join_name, spec = join_filters[0]
-            vals.extend(get_data(model, join_filter=join_filters[0]))
+            vals.extend(cls.get_data(model, None, join_filter=join_filters[0]))
             join_filters = join_filters[1:]
 
-        return local_filter(vals, specs, join_filters, orders)
+        return cls.local_filter(vals, specs, join_filters, orders)
 
     @staticmethod
     def local_filter(vals, specs, join_filters, orders):
@@ -177,6 +178,3 @@ class CassandraQueryImpl(QueryImplementation):
             for k, v in values:
                 new_instance[k] = v
             new_instance.save()
-
-class InvertedIndicesRepo(object):
-    def addTable()
