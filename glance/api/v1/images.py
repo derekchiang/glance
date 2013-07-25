@@ -369,7 +369,12 @@ class Controller(controller.BaseController):
             image_meta['size'] = image_meta.get('size', 0)
 
         try:
+            print "before"
+            print image_meta
             image_meta = registry.add_image_metadata(req.context, image_meta)
+            print "after"
+            print image_meta
+            print req.context.__dict__
             self.notifier.info("image.create", redact_loc(image_meta))
             return image_meta
         except exception.Duplicate:
@@ -508,6 +513,8 @@ class Controller(controller.BaseController):
     def _handle_source(self, req, image_id, image_meta, image_data):
         copy_from = self._copy_from(req)
         location = image_meta.get('location')
+        print "three things"
+        print (copy_from, location, image_data)
         sources = filter(lambda x: x, (copy_from, location, image_data))
         if len(sources) >= 2:
             msg = _("It's invalid to provide multiple image sources.")
@@ -586,6 +593,8 @@ class Controller(controller.BaseController):
                 and the request body is not application/octet-stream
                 image data.
         """
+        print "First"
+        print image_meta
         self._enforce(req, 'add_image')
         is_public = image_meta.get('is_public')
         if is_public:
@@ -594,8 +603,14 @@ class Controller(controller.BaseController):
             self._enforce(req, 'copy_from')
 
         image_meta = self._reserve(req, image_meta)
+        print "Second"
+        print image_meta
         id = image_meta['id']
 
+        print "wahaha"
+        print image_meta
+        print image_data
+        print 'BP2'
         image_meta = self._handle_source(req, id, image_meta, image_data)
 
         location_uri = image_meta.get('location')
@@ -681,6 +696,7 @@ class Controller(controller.BaseController):
                                                         purge_props)
 
             if activating:
+                print 'BP1'
                 image_meta = self._handle_source(req, id, image_meta,
                                                  image_data)
 

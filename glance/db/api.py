@@ -57,6 +57,15 @@ def get_session():
 
 get_query = Query(query_impl=backend.query_impl)
 
+# Convenience function
+# Cassandra would return locations as dictionaries,
+# SQLAlchemy as objects
+def get_attribute(obj, kw):
+    if isinstance(obj, dict):
+        return obj[kw]
+    else:
+        return getattr(obj, kw)
+
 def _check_mutate_authorization(context, image_ref):
     if not is_image_mutable(context, image_ref):
         LOG.info(_("Attempted to modify image user did not own."))
@@ -109,13 +118,6 @@ def image_destroy(context, image_id):
 
 
 def _normalize_locations(image):
-    # Cassandra would return locations as dictionaries, SQLAlchemy as objects
-    def get_attribute(obj, kw):
-        if isinstance(obj, dict):
-            return obj[kw]
-        else:
-            return getattr(obj, kw)
-
     undeleted_locations = filter(lambda x: not get_attribute(x, 'deleted'),\
         image['locations'])
     image['locations'] = [loc['value'] for loc in undeleted_locations]
@@ -559,7 +561,7 @@ def _set_properties_for_image(context, image_ref, properties,
     """
     orig_properties = {}
     for prop_ref in image_ref.properties:
-        orig_properties[prop_ref.name] = prop_ref
+        orig_properties[get_attribute(prop_ref, 'name')] = prop_ref
 
     for name, value in properties.iteritems():
         prop_values = {'image_id': image_ref.id,

@@ -35,6 +35,7 @@ from glance.openstack.common import uuidutils
 from glance.db.pyquery.spec import Attr, EQ
 from glance.db.pyquery.model import Model
 
+import uuid
 import pickle
 
 # TODO: set it up
@@ -70,6 +71,8 @@ class SerializableModelBase(Model, SerializableClass, DictionaryLike):
         "created_at", "updated_at", "deleted_at", "deleted"])
 
     def __init__(self, **kwargs):
+        # For compability with the generic API, generate an ID
+        self.id = str(uuid.uuid4())
         self.created_at = timeutils.utcnow()
         self.updated_at = timeutils.utcnow()
         self.deleted_at = None
@@ -79,6 +82,7 @@ class SerializableModelBase(Model, SerializableClass, DictionaryLike):
 
     def to_dict(self):
         return {
+            'id': self.id,
             'created_at': self.created_at,
             'updated_at': self.updated_at,
             'deleted_at': self.deleted_at,
@@ -95,26 +99,26 @@ class SerializableModelBase(Model, SerializableClass, DictionaryLike):
             setattr(parent, children_name, children)
             cfm.insert(parent, write_consistency_level=ConsistencyLevel.ALL)
 
+    def update(self, values):
+        """dict.update() behaviour."""
+        for k, v in values.iteritems():
+            setattr(self, k, v)
 
 
 class ImageProperty(SerializableModelBase):
     """Represents an image properties in the datastore"""
     def __init__(self, **kwargs):
-        super(ImageLocation, self).__init__(**kwargs)
+        super(ImageProperty, self).__init__(**kwargs)
 
     def to_dict(self):
         return dict(super(ImageProperty, self).to_dict(),
-                    **{
-                    'id': self.id,
-                    'name': self.name,
-                    'value': self.value
-                    })
+                    **(self.__dict__))
 
 
 class ImageTag(SerializableModelBase):
     """Represents an image tag in the datastore"""
     def __init__(self, **kwargs):
-        super(ImageLocation, self).__init__(**kwargs)
+        super(ImageTag, self).__init__(**kwargs)
 
     def to_dict(self):
         return dict(super(ImageTag, self).to_dict().items(),
@@ -126,6 +130,9 @@ class ImageTag(SerializableModelBase):
 class ImageLocation(SerializableModelBase):
     """Represents an image location in the datastore"""
     def __init__(self, **kwargs):
+        # default values
+        self.meta_data = {}
+
         super(ImageLocation, self).__init__(**kwargs)
 
     def to_dict(self):
@@ -137,15 +144,15 @@ class ImageLocation(SerializableModelBase):
 
 class ImageMember(SerializableModelBase):
     def __init__(self, **kwargs):
-        super(ImageLocation, self).__init__(**kwargs)
+        # default values
+        self.can_share = False
+        self.status = 'pending'
+
+        super(ImageMember, self).__init__(**kwargs)
 
     def to_dict(self):
         return dict(super(ImageMember, self).to_dict().items(),
-                    **{
-                    'member': self.member,
-                    'can_share': self.can_share,
-                    'status': self.status
-                    })
+                    **(self.__dict__))
 
 
 class ArrayType(CassandraType):
@@ -328,7 +335,6 @@ class SecondaryIndexRepo(object):
             if r[2] == cls:
                 cf_name = r[3]
                 cf = ColumnFamily(pool, cf_name)
-                print cf_name
                 for w in cf.get_range(read_consistency_level=ConsistencyLevel.ALL):
                     print w
                 # print get_row_key(spec.attr, spec.value_spec.value)
@@ -392,6 +398,7 @@ def register_models():
 
         # Create indices on columns
         sys.create_index(KEYSPACE_NAME, 'Images', 'id', 'UTF8Type')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'is_public', 'BooleanType')
 
         sys.create_column_family(KEYSPACE_NAME, 'Images_By_Image_Member')
         sys.create_column_family(KEYSPACE_NAME, 'Images_By_Image_Property')

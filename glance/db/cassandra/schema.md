@@ -1,3 +1,0 @@
-### Image
-
-Index on: deleted
