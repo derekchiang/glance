@@ -43,13 +43,14 @@ STATUSES = ['active', 'saving', 'queued', 'killed', 'pending_delete',
 # Set up query -- should read from a config file eventually
 
 backend = get_backend()
+backend_api = get_backend('api')
 
 exceptions = get_backend('exceptions')
 models = get_backend('models')
 
 # For backward compatibility
-setup_db_env = backend.api.setup_db_env
-clear_db_env = backend.api.clear_db_env
+setup_db_env = backend_api.setup_db_env
+clear_db_env = backend_api.clear_db_env
 
 def get_session():
     return backend.api._get_session()
@@ -70,6 +71,7 @@ def _check_mutate_authorization(context, image_ref):
 
 def image_create(context, values):
     """Create an image from the values dictionary."""
+    print 'creating image'
     return _image_update(context, values, None, False)
 
 
@@ -79,6 +81,7 @@ def image_update(context, image_id, values, purge_props=False):
 
     :raises NotFound if image does not exist.
     """
+    print 'updating image'
     return _image_update(context, values, image_id, purge_props)
 
 
@@ -121,6 +124,7 @@ def _normalize_locations(image):
 
 def image_get(context, image_id, session=None, force_show_deleted=False):
     assert image_id is not None
+    print 'getting image'
 
     image = _image_get(context, image_id, session=session,
                        force_show_deleted=force_show_deleted)
@@ -509,10 +513,12 @@ def _image_update(context, values, image_id, purge_props=False):
         # on new records, only on existing records, which is, well,
         # idiotic.
         values = _validate_image(image_ref.to_dict())
+        print values
         _update_values(image_ref, values)
 
         try:
             print 'saving'
+            print image_ref.__dict__
             image_ref.save(session=session)
         # TODO: shouldn't 
         except exceptions.DuplicateKeyError:

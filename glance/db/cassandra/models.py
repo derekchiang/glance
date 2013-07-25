@@ -27,7 +27,7 @@ from pycassa.system_manager import SystemManager, SIMPLE_STRATEGY, \
 from pycassa.columnfamilymap import ColumnFamilyMap
 from pycassa.columnfamily import ColumnFamily
 from pycassa.cassandra.ttypes import NotFoundException
-from pycassa import ConnectionPool
+from pycassa import ConnectionPool, ConsistencyLevel
 
 from glance.openstack.common import timeutils
 from glance.openstack.common import uuidutils
@@ -89,11 +89,11 @@ class SerializableModelBase(Model, SerializableClass, DictionaryLike):
         for parent_model, children_name, id_name in secondary_index_repo\
                     .get_parent_and_field_name(self.__class__):
             cfm = ColumnFamilyMap(parent_model, pool, parent_model.cf_name)
-            parent = cfm.get(getattr(self, id_name))
+            parent = cfm.get(getattr(self, id_name), read_consistency_level=ConsistencyLevel.ALL)
             children = getattr(parent, children_name)
             children.append(self.to_dict())
             setattr(parent, children_name, children)
-            cfm.insert(parent)
+            cfm.insert(parent, write_consistency_level=ConsistencyLevel.ALL)
 
 
 
@@ -224,23 +224,28 @@ class Image(Model, DictionaryLike):
         for field, cf in secondary_index_repo.get(cls):
             children = getattr(self, field)
             for child in children:
-                print child
-                d = child.to_dict()
-                for k, v in d.iteritems():
+                for k, v in child.iteritems():
                     row_key = get_row_key(k, v)
                     try:
-                        original_value = cf.get(row_key)
-                        cf.insert({
-                            row_key: dict(original_value, **{self.key: ''})
-                            })
+                        original_value = cf.get(row_key, read_consistency_level=ConsistencyLevel.ALL)
+                        cf.insert(row_key, dict(original_value, **{self.key: ''})
+                                  , write_consistency_level=ConsistencyLevel.ALL)
                     except NotFoundException:
-                        cf.insert({
-                            row_key: {self.key: ''}
-                            })
+                        cf.insert(row_key, {self.key: ''}
+                                  , write_consistency_level=ConsistencyLevel.ALL)
 
         cfm = ColumnFamilyMap(cls, pool, cls.cf_name)
         self.key = self.id
-        cfm.insert(self)
+        try:
+            cfm.get(self.key, read_consistency_level=ConsistencyLevel.ALL)
+        except NotFoundException:
+            print 'not found'
+        print 'being inserted'
+        print self.to_dict()
+        cfm.insert(self, write_consistency_level=ConsistencyLevel.ALL)
+        another = cfm.get(self.key, read_consistency_level=ConsistencyLevel.ALL)
+        print 'another'
+        print another.to_dict()
     
         # related_cfs = secondary_index_repo.get_related_cf(cls)
         # for target_cf, target_field, target_index_field,\
@@ -324,11 +329,11 @@ class SecondaryIndexRepo(object):
                 cf_name = r[3]
                 cf = ColumnFamily(pool, cf_name)
                 print cf_name
-                for w in cf.get_range():
+                for w in cf.get_range(read_consistency_level=ConsistencyLevel.ALL):
                     print w
                 # print get_row_key(spec.attr, spec.value_spec.value)
                 try:
-                    d = cf.get(get_row_key(spec.attr, spec.value_spec.value))
+                    d = cf.get(get_row_key(spec.attr, spec.value_spec.value), read_consistency_level=ConsistencyLevel.ALL)
                 except NotFoundException:
                     d = {}
                 
@@ -400,4 +405,11 @@ def unregister_models():
     Drops database tables for all models with the given engine
     """
     global sys
+
+    sys.drop_column_family(KEYSPACE_NAME, 'Images')
+    sys.drop_column_family(KEYSPACE_NAME, 'Images_By_Image_Member')
+    sys.drop_column_family(KEYSPACE_NAME, 'Images_By_Image_Property')
+    sys.drop_column_family(KEYSPACE_NAME, 'Images_By_Image_Location')
+
     sys.drop_keyspace(KEYSPACE_NAME)
+    sys.close()

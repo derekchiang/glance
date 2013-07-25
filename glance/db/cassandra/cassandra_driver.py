@@ -1,5 +1,5 @@
 from pycassa.columnfamilymap import ColumnFamilyMap
-from pycassa import ConnectionPool
+from pycassa import ConnectionPool, ConsistencyLevel
 # from pycassa.index import create_index_expression, create_index_clause
 import pycassa.index as index
 from pycassa.index import create_index_clause, create_index_expression
@@ -47,7 +47,7 @@ class CassandraQueryImpl(QueryImplementation):
             related_model = get_related_model(model, ref_name)
             cfm, parents, _ = secondary_index_repo.get_data(related_model, spec)
             for p in parents:
-                d = cfm.get(key=p)
+                d = cfm.get(key=p, read_consistency_level=ConsistencyLevel.ALL)
                 yield d
 
         elif spec:
@@ -68,13 +68,13 @@ class CassandraQueryImpl(QueryImplementation):
                 print model.cf_name
                 print expressions
                 clause = create_index_clause(expressions)
-                for k in cfm.get_indexed_slices(clause):
+                for k in cfm.get_indexed_slices(clause, read_consistency_level=ConsistencyLevel.ALL):
                     yield k
 
             else:
                 cfm, parents, related_name = secondary_index_repo.get_data(model, spec)
                 for p in parents:
-                    d = cfm.get(key=p, columns=[related_name])
+                    d = cfm.get(key=p, columns=[related_name], read_consistency_level=ConsistencyLevel.ALL)
                     for child in d[related_name]:
                         if spec.match(child):
                             yield child
