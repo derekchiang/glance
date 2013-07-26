@@ -43,7 +43,8 @@ from glance.db.cassandra.lib import ImageRepo, \
                                     ImageIdDuplicateException, \
                                     ImageIdNotFoundException, \
                                     Models, \
-                                    merge_dict, drop_protected_attrs
+                                    merge_dict, drop_protected_attrs,
+                                    sort_dicts
 
 pool = None
 LOG = os_logging.getLogger(__name__)
@@ -104,11 +105,11 @@ def clear_db_env():
     pool = None
 
 
-def _check_mutate_authorization(context, image_ref):
-    if not is_image_mutable(context, image_ref):
+def _check_mutate_authorization(context, image):
+    if not is_image_mutable(context, image):
         LOG.info(_("Attempted to modify image user did not own."))
         msg = _("You do not own this image")
-        if image_ref.is_public:
+        if image['is_public']:
             exc_class = exception.ForbiddenPublicImage
         else:
             exc_class = exception.Forbidden
@@ -853,12 +854,13 @@ def image_tag_delete(context, image_id, value, session=None):
     tag_ref.delete(session=session)
 
 
-def image_tag_get_all(context, image_id, session=None):
+def image_tag_get_all(context, image_id):
     """Get a list of tags for a specific image."""
-    session = session or _get_session()
-    tags = session.query(models.ImageTag)\
-                  .filter_by(image_id=image_id)\
-                  .filter_by(deleted=False)\
-                  .order_by(sqlalchemy.asc(models.ImageTag.created_at))\
-                  .all()
+    repo.reset()
+
+    image = repo.load('tags').get(key=image_id)
+    tags = filter(lambda x: x['deleted'] == False, image['tags'])
+
+    tags = sort_dicts(tags, [('created_at', 'asc')])
+
     return [tag['value'] for tag in tags]
