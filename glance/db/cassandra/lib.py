@@ -8,6 +8,7 @@ from pycassa import index, NotFoundException
 
 import pickle
 
+# Custom exceptions
 class ImageIdNotFoundException(Exception):
     pass
 
@@ -35,6 +36,14 @@ Models = enum(Image=0, ImageMember=1, ImageLocation=2,\
 def merge_dict(dict1, dict2):
     return dict(dict1, **dict2)
 
+__protected_attributes__ = set([
+        "created_at", "updated_at", "deleted_at", "deleted"])
+
+def drop_protected_attrs(vals):
+        for attr in __protected_attributes__:
+            if attr in vals:
+                del vals[attr]
+
 class ImageRepo(object):
     def __init__(self, pool):
         super(ImageRepo, self).__init__(pool)
@@ -42,13 +51,13 @@ class ImageRepo(object):
         self.inverted_cf = ColumnFamily(pool, 'Inverted_indices')
 
     @staticmethod
-    def create(model):
+    def create(model, **kwargs):
         # Create the given model
-        base = {
+        base = merge_dict({
             'created_at': timeutils.utcnow(),
             'updated_at': timeutils.utcnow(),
             'deleted': False
-        }
+        }, kwargs)
 
         if model == Models.Image:
             return merge_dict(base, {
@@ -69,7 +78,7 @@ class ImageRepo(object):
             return merge_dict(base, {
                 'meta_data': {}
             })
-            
+
         elif model == Models.ImageProperty:
             return merge_dict(base, {})
 
@@ -78,6 +87,11 @@ class ImageRepo(object):
 
         else:
             raise UndefinedModelException()
+
+    def soft_delete(self, obj, model=Models.Image):
+        obj.deleted = True
+        obj.deleted_at = timeutils.utcnow()
+        self.save(obj, model, override=True)
 
     def save(self, obj, model=Models.Image, override=False):
         if model == Models.Image:
