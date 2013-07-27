@@ -408,85 +408,84 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                       an admin the equivalent set of images which it would see
                       if it were a regular user
     """
+    repo.reset()
     filters = filters or {}
 
     query_image = session.query(models.Image)
     query_member = session.query(models.Image).join(models.Image.members)
 
-
+    image_filters = []
+    other_filters = []
 
     if (not context.is_admin) or admin_as_user == True:
-        visibility_filters = [models.Image.is_public == True]
-        member_filters = [models.ImageMember.deleted == False]
+        image_filters.append(('is_public', '=', True))
+        other_filters.append(Attr('members.deleted', EQ(False)))
 
         if context.owner is not None:
-            if member_status == 'all':
-                visibility_filters.extend([
-                    models.Image.owner == context.owner])
-                member_filters.extend([
-                    models.ImageMember.member == context.owner])
-            else:
-                visibility_filters.extend([
-                    models.Image.owner == context.owner])
-                member_filters.extend([
-                    models.ImageMember.member == context.owner,
-                    models.ImageMember.status == member_status])
+            image_filters.append(('owner', '=', context.owner))
+            other_filters.append(Attr('members.member',
+                                      EQ(context,owner)))
+            if member_status != 'all':
+                other_filters.append(Attr('members.status',
+                                          EQ(member_status)))
 
-        query_image = query_image.filter(sa_sql.or_(*visibility_filters))
-        query_member = query_member.filter(sa_sql.and_(*member_filters))
+        other_filters = [And(*other_filters)]
 
-    query = query_image.union(query_member)
+    repo.filter(*image_filters)
 
     if 'visibility' in filters:
         visibility = filters.pop('visibility')
         if visibility == 'public':
-            query = query.filter(models.Image.is_public == True)
+            repo.filter(is_public=True)
         elif visibility == 'private':
-            query = query.filter(models.Image.is_public == False)
+            repo.filter(is_public=False)
             if context.owner is not None and ((not context.is_admin)
                                               or admin_as_user == True):
-                query = query.filter(
-                    models.Image.owner == context.owner)
+                repo.filter(owner=context.owner)
         else:
-            query_member = query_member.filter(
-                models.ImageMember.member == context.owner,
-                models.ImageMember.deleted == False)
-            query = query_member
+            other_filters.extend([Attr('members.member', EQ(context.owner)),
+                                  Attr('members.deleted', EQ(False))])
+            repo.reset()
 
     if is_public is not None:
-        query = query.filter(models.Image.is_public == is_public)
+        repo.filter(is_public=is_public)
 
     if 'is_public' in filters:
-        spec = models.Image.properties.any(name='is_public',
-                                           value=filters.pop('is_public'),
-                                           deleted=False)
-        query = query.filter(spec)
+        # TODO: the spec library does not support 'Any' yet
+        other_filters.append(Attr('properties',
+                                  Any(And(Attr('name', EQ('is_public')),
+                                          Attr('value',
+                                               EQ(filters.pop('is_public'))),
+                                          Attr('deleted', EQ(False))))))
 
     showing_deleted = False
 
     if 'checksum' in filters:
         checksum = filters.get('checksum')
-        query = query.filter_by(checksum=checksum)
+        repo.filter(checksum=checksum)
 
     if 'changes-since' in filters:
         # normalize timestamp to UTC, as sqlalchemy doesn't appear to
         # respect timezone offsets
         changes_since = timeutils.normalize_time(filters.pop('changes-since'))
-        query = query.filter(models.Image.updated_at > changes_since)
+        repo.filter(('updated_at', '>', 'changes_since'))
         showing_deleted = True
 
     if 'deleted' in filters:
         deleted_filter = filters.pop('deleted')
-        query = query.filter_by(deleted=deleted_filter)
+        repo.filter(deleted=deleted_filter)
         showing_deleted = deleted_filter
         # TODO(bcwaldon): handle this logic in registry server
         if not deleted_filter:
-            query = query.filter(models.Image.status != 'killed')
+            other_filters.append(Attr('status', NEQ('killed')))
+
 
     for (k, v) in filters.pop('properties', {}).items():
-        query = query.filter(models.Image.properties.any(name=k,
-                                                         value=v,
-                                                         deleted=False))
+        other_filters.append(Attr('properties',
+                                  Any(And(Attr('name', EQ(k)),
+                                          Attr('value',
+                                               EQ(v)),
+                                          Attr('deleted', EQ(False))))))
 
     for (k, v) in filters.items():
         if v is not None:
@@ -501,29 +500,24 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                     raise exception.InvalidFilterRangeValue(msg)
 
             if k.endswith('_min'):
-                query = query.filter(getattr(models.Image, key) >= v)
+                repo.filter((key, '>=', v))
             elif k.endswith('_max'):
-                query = query.filter(getattr(models.Image, key) <= v)
+                repo.filter((key, '<=', v))
             elif hasattr(models.Image, key):
-                query = query.filter(getattr(models.Image, key) == v)
+                repo.filter((key, '=', v))
             else:
-                query = query.filter(models.Image.properties.any(name=key,
-                                                                 value=v))
+                other_filters.append(Attr('properties',
+                                  Any(And(Attr('name', EQ(key)),
+                                          Attr('value',
+                                               EQ(v))))))
 
-    marker_image = None
-    if marker is not None:
-        marker_image = _image_get(context, marker,
-                                  force_show_deleted=showing_deleted)
+    images = repo.get()
+    other_filters = And(*other_filters)
+    images = filter(lambda x: other_filters.match(x), images)
 
-    query = _paginate_query(query, models.Image, limit,
-                            [sort_key, 'created_at', 'id'],
-                            marker=marker_image,
-                            sort_dir=sort_dir)
+    # TODO: pagination
 
-    query = query.options(sa_orm.joinedload(models.Image.properties))\
-                 .options(sa_orm.joinedload(models.Image.locations))
-
-    return [_normalize_locations(image.to_dict()) for image in query.all()]
+    return [_normalize_locations(image) for image in repo.get()]
 
 
 def _validate_image(values):
@@ -833,26 +827,24 @@ def image_tag_set_all(context, image_id, tags):
 
 def image_tag_create(context, image_id, value, session=None):
     """Create an image tag."""
-    session = session or _get_session()
-    tag_ref = models.ImageTag(image_id=image_id, value=value)
-    tag_ref.save(session=session)
-    return tag_ref['value']
+    repo.reset()
+    tag = repo.create(Models.ImageTag, image_id=image_id, value=value)
+    repo.save(tag, Models.ImageTag)
+    return tag['value']
 
 
 def image_tag_delete(context, image_id, value, session=None):
     """Delete an image tag."""
-    session = session or _get_session()
-    query = session.query(models.ImageTag)\
-                   .filter_by(image_id=image_id)\
-                   .filter_by(value=value)\
-                   .filter_by(deleted=False)
-    try:
-        tag_ref = query.one()
-    except sa_orm.exc.NoResultFound:
+    repo.reset()
+
+    image = repo.load('tags').get(key=image_id)
+    tags = filter(lambda x: x['value'] == value and
+                            x['deleted'] == False, image['tags'])
+
+    if len(image['tags']) == 0:
         raise exception.NotFound()
-
-    tag_ref.delete(session=session)
-
+    else
+        repo.soft_delete(image['tags'][0])
 
 def image_tag_get_all(context, image_id):
     """Get a list of tags for a specific image."""
