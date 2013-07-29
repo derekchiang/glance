@@ -58,6 +58,9 @@ def sort_dicts(dicts, sort_by):
 __protected_attributes__ = set([
         "created_at", "updated_at", "deleted_at", "deleted"])
 
+__serialized_fields__ = set([
+        'members', 'properties', 'tags', 'locations'])
+
 def drop_protected_attrs(vals):
         for attr in __protected_attributes__:
             if attr in vals:
@@ -116,6 +119,9 @@ class ImageRepo(object):
         self.save(obj, model, override=True)
 
     def save(self, obj, model=Models.Image, override=False):
+        # TODO: should we do copy() or deepcopy()?
+        obj = obj.copy()
+
         if model == Models.Image:
             key = obj.get('key') or obj.get('id')
             
@@ -132,9 +138,9 @@ class ImageRepo(object):
             # Cassandra can only save strings, so
             # we need to marshal None and boolean
             for k, v in obj.iteritems():
-                if isinstance(v, list):
+                if k in __serialized_fields__:
                     obj[k] = pickle.dumps(v)
-                if not isinstance(v, basestring):
+                elif not isinstance(v, basestring):
                     obj[k] = MARSHAL_PREFIX + pickle.dumps(v)
 
             LOG.info('obj: ')
@@ -173,6 +179,9 @@ class ImageRepo(object):
             print image
 
             if arr:
+                print 'prefix: '
+                print prefix
+                print arr
                 arr = pickle.loads(arr)
                 if override:
                     # look for an existing object with the same id
@@ -242,13 +251,14 @@ class ImageRepo(object):
                     res[k] = pickle.loads(v[len(MARSHAL_PREFIX):])
 
             for load in self.loads:
-                
+                print 'loading stuff!'
                 l = res.get(load)
                 if l:
                     res[load] = pickle.loads(l)
                 else:
                     res[load] = []
 
+            print res
             return res
         elif self.expressions != []:
             clause = create_index_clause(self.expressions)

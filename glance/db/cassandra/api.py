@@ -628,8 +628,13 @@ def _image_update(context, values, image_id, purge_props=False):
     image = merge_dict(image, values)
     values = _validate_image(image)
 
+    print 'the image is: '
+    print image
+
     try:
-        repo.save(image)
+        # TODO: discuss whether we actually want to override
+        # stuff here
+        repo.save(image, override=True)
     except ImageIdDuplicateException:
         raise exception.Duplicate("Image ID %s already exists!"
                                   % values['id'])
