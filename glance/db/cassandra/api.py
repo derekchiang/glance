@@ -78,6 +78,18 @@ CONF.register_opts(db_opts)
 CONF.import_opt('debug', 'glance.openstack.common.log')
 
 
+trace_enabled = True
+
+def trace(func):
+    '''For debug purpose only.
+    '''
+    def wrapper(*args, **kwargs):
+        print func.__name__ 
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
 def add_cli_options():
     """Allows passing sql_connection as a CLI argument."""
 
@@ -119,11 +131,14 @@ def _check_mutate_authorization(context, image):
         raise exc_class(msg)
         
 
+@trace
 def image_create(context, values):
     """Create an image from the values dictionary."""
+    print 'the values are: '
+    print values
     return _image_update(context, values, None, False)
 
-
+@trace
 def image_update(context, image_id, values, purge_props=False):
     """
     Set the given properties on an image and update it.
@@ -132,7 +147,7 @@ def image_update(context, image_id, values, purge_props=False):
     """
     return _image_update(context, values, image_id, purge_props)
 
-
+@trace
 def image_destroy(context, image_id):
     """Destroy the image or raise if it does not exist."""
     repo.reset()
@@ -160,25 +175,25 @@ def image_destroy(context, image_id):
 
     return _normalize_locations(image)
 
-
+@trace
 def _normalize_locations(image):
-    undeleted_locations = filter(lambda x: not x.deleted, image['locations'])
+    undeleted_locations = filter(lambda x: not x['deleted'], image['locations'])
     image['locations'] = [{'url': loc['value'],
                            'metadata': loc['meta_data']}
                           for loc in undeleted_locations]
     return image
 
-
+@trace
 def image_get(context, image_id, session=None, force_show_deleted=False):
     image = _image_get(context, image_id,
                        force_show_deleted=force_show_deleted)
     image = _normalize_locations(image)
-    LOG.info('finally')
-    LOG.info(type(image))
-    LOG.info(image)
+    print ('finally')
+    print (type(image))
+    print (image)
     return image
 
-
+@trace
 def _image_get(context, image_id, force_show_deleted=False):
     """Get an image or raise if it does not exist."""
     repo.reset()
@@ -390,7 +405,7 @@ def _paginate_query(query, model, limit, sort_keys, marker=None,
 
     return query
 
-
+@trace
 def image_get_all(context, filters=None, marker=None, limit=None,
                   sort_key='created_at', sort_dir='desc',
                   member_status='accepted', is_public=None,
@@ -521,7 +536,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
 
     return [_normalize_locations(image) for image in repo.get()]
 
-
+@trace
 def _validate_image(values):
     """
     Validates the incoming data and raises a Invalid exception
@@ -550,7 +565,7 @@ def _update_values(image_ref, values):
         if getattr(image_ref, k) != values[k]:
             setattr(image_ref, k, values[k])
 
-
+@trace
 def _image_update(context, values, image_id, purge_props=False):
     """
     Used internally by image_create and image_update
@@ -626,12 +641,12 @@ def _image_update(context, values, image_id, purge_props=False):
 
     return image_get(context, image['id'])
 
-
+@trace
 def _image_locations_set(image_id, locations):
     repo.reset()
 
     image = repo.load('locations').get(key=image_id)
-    locations = []
+
     for location in image['locations']:
         if location['deleted'] == False:
             repo.soft_delete(location)
@@ -642,6 +657,7 @@ def _image_locations_set(image_id, locations):
     # at once.  We might want to optimize this.
     for location in locations:
         new_location = repo.create(Models.ImageLocation,
+                                   image_id=image_id,
                                    value=location['url'],
                                    meta_data=location['metadata'])
         repo.save(new_location, Models.ImageLocation)

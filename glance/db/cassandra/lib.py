@@ -75,7 +75,10 @@ class ImageRepo(object):
         base = merge_dict({
             'created_at': timeutils.utcnow(),
             'updated_at': timeutils.utcnow(),
-            'deleted': False
+            'deleted': False,
+            'checksum': None,
+            'disk_format': None,
+            'container_format': None
         }, kwargs)
 
         if model == Models.Image:
@@ -146,28 +149,29 @@ class ImageRepo(object):
                 Models.ImageTag: 'tags'
             }.get(model)
 
-            image_id = obj['image_id']
-            if image_id == None:
-                raise ImageIdNotFoundException()
+            image_id = obj.pop('image_id')
 
             # Save all attributes as inverted indices
             for k, v in obj.iteritems():
-                if k != 'image_id':
-                    # row key would be something like:
-                    # members.status=pending
-                    row_key = prefix + '.' + str(k) + '=' + str(v)
+                # row key would be something like:
+                # members.status=pending
+                row_key = prefix + '.' + str(k) + '=' + str(v)
 
-                    try:
-                        original = self.inverted_cf.get(row_key)
-                        new_dict = merge_dict(original[row_key], {image_id: ''})
-                    except NotFoundException:
-                        new_dict = {image_id: ''}
-                    
-                    self.inverted_cf.insert(row_key, new_dict)
+                try:
+                    original = self.inverted_cf.get(row_key)
+                    new_dict = merge_dict(original, {image_id: ''})
+                except NotFoundException:
+                    new_dict = {image_id: ''}
+                
+                self.inverted_cf.insert(row_key, new_dict)
 
             # Save obj as serialized data
             image = self.cf.get(image_id)
             arr = image.get(prefix)
+
+            print "I'm getting the image!!"
+            print image
+
             if arr:
                 arr = pickle.loads(arr)
                 if override:
