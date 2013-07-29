@@ -1,3 +1,4 @@
+import glance.openstack.common.log as os_logging
 from glance.openstack.common import timeutils, uuidutils
 
 from pycassa.columnfamily import ColumnFamily
@@ -7,6 +8,10 @@ from pycassa.index import EQ, GT, GTE, LT, LTE, \
 from pycassa import index, NotFoundException
 
 import pickle
+
+LOG = os_logging.getLogger(__name__)
+
+MARSHAL_PREFIX = '__'
 
 # Custom exceptions
 class ImageIdNotFoundException(Exception):
@@ -36,6 +41,20 @@ Models = enum(Image=0, ImageMember=1, ImageLocation=2,\
 def merge_dict(dict1, dict2):
     return dict(dict1, **dict2)
 
+def sort_dicts(dicts, sort_by):
+    # sort_by is a list of tuples of the form:
+    # [('name', 'asc'), ('age', 'des')]
+    def insertion_sort(dicts, sort_by):
+        pass
+
+    def quick_sort(dicts, sort_by):
+        pass
+
+    if len(dicts) < 20:
+        insertion_sort(dicts, sort_by)
+    else:
+        quick_sort(dicts, sort_by)
+
 __protected_attributes__ = set([
         "created_at", "updated_at", "deleted_at", "deleted"])
 
@@ -46,9 +65,9 @@ def drop_protected_attrs(vals):
 
 class ImageRepo(object):
     def __init__(self, pool):
-        super(ImageRepo, self).__init__(pool)
-        self.cf = ColumnFamily(pool, 'Images')
-        self.inverted_cf = ColumnFamily(pool, 'Inverted_indices')
+        self.pool = pool
+        self.cf = ColumnFamily(pool, 'Images', dict_class=dict)
+        self.inverted_cf = ColumnFamily(pool, 'Inverted_indices', dict_class=dict)
 
     @staticmethod
     def create(model, **kwargs):
@@ -107,6 +126,17 @@ class ImageRepo(object):
                 except NotFoundException:
                     pass
 
+            # Cassandra can only save strings, so
+            # we need to marshal None and boolean
+            for k, v in obj.iteritems():
+                if isinstance(v, list):
+                    obj[k] = pickle.dumps(v)
+                if not isinstance(v, basestring):
+                    obj[k] = MARSHAL_PREFIX + pickle.dumps(v)
+
+            LOG.info('obj: ')
+            LOG.info(key)
+            LOG.info(obj)
             self.cf.insert(key, obj)
         else:
             prefix = {
@@ -125,7 +155,7 @@ class ImageRepo(object):
                 if k != 'image_id':
                     # row key would be something like:
                     # members.status=pending
-                    row_key = prefix + '.' + k + '=' + v
+                    row_key = prefix + '.' + str(k) + '=' + str(v)
 
                     try:
                         original = self.inverted_cf.get(row_key)
@@ -165,8 +195,8 @@ class ImageRepo(object):
         self.expressions = []
         self.loads = []
 
-    def load(self, *args):
-        self.loads.extend(*args)
+    def load(self, load):
+        self.loads.append(load)
         return self
 
     # This method supports multiple usage pattern, including:
@@ -199,14 +229,33 @@ class ImageRepo(object):
     def get(self, number=1, key=None):
         if key and isinstance(key, basestring):
             res = self.cf.get(key)
+
+            LOG.info('res is: ')
+            LOG.info(res)
+
+            for k, v in res.iteritems():
+                if isinstance(v, basestring) and v.startswith(MARSHAL_PREFIX):
+                    res[k] = pickle.loads(v[len(MARSHAL_PREFIX):])
+
             for load in self.loads:
-                res[load] = pickle.loads(res[load])
+                
+                l = res.get(load)
+                if l:
+                    res[load] = pickle.loads(l)
+                else:
+                    res[load] = []
+
             return res
         elif self.expressions != []:
             clause = create_index_clause(self.expressions)
             res = self.cf.get_indexed_slices(clause, number)
             for index, item in enumerate(res):
+
+                for k, v in item.iteritems():
+                    if v.startswith(MARSHAL_PREFIX):
+                        item[k] = pickle.loads(v[len(MARSHAL_PREFIX):])
+
                 for load in self.loads:
-                    res[index] = pickle.loads(item[load])
+                    res[index][load] = pickle.loads(item[load])
 
             return res

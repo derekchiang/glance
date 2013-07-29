@@ -26,25 +26,24 @@ import logging
 import time
 
 from oslo.config import cfg
-import sqlalchemy
-import sqlalchemy.orm as sa_orm
-import sqlalchemy.sql as sa_sql
 
 from glance.common import exception
-from glance.db.sqlalchemy import migration
-from glance.db.sqlalchemy import models
+
 import glance.openstack.common.log as os_logging
 from glance.openstack.common import timeutils
 
 from pycassa.pool import ConnectionPool
 from pycassa import NotFoundException
+from pycassa.system_manager import SystemManager, SIMPLE_STRATEGY
 
+from glance.db.cassandra.models import register_models, unregister_models
 from glance.db.cassandra.lib import ImageRepo, \
                                     ImageIdDuplicateException, \
                                     ImageIdNotFoundException, \
                                     Models, \
-                                    merge_dict, drop_protected_attrs,
+                                    merge_dict, drop_protected_attrs,\
                                     sort_dicts
+from glance.db.cassandra.spec import EQ, Attr, Any, And, Or, NEQ
 
 pool = None
 LOG = os_logging.getLogger(__name__)
@@ -56,7 +55,7 @@ STATUSES = ['active', 'saving', 'queued', 'killed', 'pending_delete',
 
 
 
-cassandra_connection_opt = cfg.StrOpt('glance-cassandra-url',
+cassandra_connection_opt = cfg.StrOpt('glance_cassandra_url',
                                 default='127.0.0.1:9160',
                                 secret=True,
                                 metavar='CONNECTION',
@@ -92,8 +91,11 @@ def setup_db_env():
     Setup global configuration for database.
     """
     global pool, repo
+
+    register_models()
+
     pool = ConnectionPool(KEYSPACE_NAME,\
-                          CONF.cassandra_connection_opt)
+                          [CONF.glance_cassandra_url])
     repo = ImageRepo(pool)
 
 
@@ -171,6 +173,9 @@ def image_get(context, image_id, session=None, force_show_deleted=False):
     image = _image_get(context, image_id,
                        force_show_deleted=force_show_deleted)
     image = _normalize_locations(image)
+    LOG.info('finally')
+    LOG.info(type(image))
+    LOG.info(image)
     return image
 
 
@@ -411,9 +416,6 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     repo.reset()
     filters = filters or {}
 
-    query_image = session.query(models.Image)
-    query_member = session.query(models.Image).join(models.Image.members)
-
     image_filters = []
     other_filters = []
 
@@ -424,7 +426,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
         if context.owner is not None:
             image_filters.append(('owner', '=', context.owner))
             other_filters.append(Attr('members.member',
-                                      EQ(context,owner)))
+                                      EQ(context, context.owner)))
             if member_status != 'all':
                 other_filters.append(Attr('members.status',
                                           EQ(member_status)))
@@ -468,7 +470,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
         # normalize timestamp to UTC, as sqlalchemy doesn't appear to
         # respect timezone offsets
         changes_since = timeutils.normalize_time(filters.pop('changes-since'))
-        repo.filter(('updated_at', '>', 'changes_since'))
+        repo.filter(('updated_at', '>', changes_since))
         showing_deleted = True
 
     if 'deleted' in filters:
@@ -527,6 +529,8 @@ def _validate_image(values):
 
     :param values: Mapping of image metadata to check
     """
+    LOG.info('values: ')
+    LOG.info(values)
     status = values.get('status')
 
     status = values.get('status', None)
@@ -558,6 +562,9 @@ def _image_update(context, values, image_id, purge_props=False):
 
     #NOTE(jbresnah) values is altered in this so a copy is needed
     values = values.copy()
+
+    LOG.info('real values: ')
+    LOG.info(values)
 
     # Remove the properties passed in the values mapping. We
     # handle properties separately from base image attributes,
@@ -598,15 +605,13 @@ def _image_update(context, values, image_id, purge_props=False):
         #NOTE(iccha-sethi): updated_at must be explicitly set in case
         #                   only ImageProperty table was modifited
         values['updated_at'] = timeutils.utcnow()
-    
-    merge_dict(image, values)
 
     # Validate the attributes before we go any further. From my
     # investigation, the @validates decorator does not validate
     # on new records, only on existing records, which is, well,
     # idiotic.
+    image = merge_dict(image, values)
     values = _validate_image(image)
-    _update_values(image, values)
 
     try:
         repo.save(image)
@@ -617,12 +622,12 @@ def _image_update(context, values, image_id, purge_props=False):
     _set_properties_for_image(context, image, properties, purge_props)
 
     if location_data is not None:
-        _image_locations_set(image.id, location_data)
+        _image_locations_set(image['id'], location_data)
 
-    return image_get(context, image.id)
+    return image_get(context, image['id'])
 
 
-def _image_locations_set(image_id, locations, session):
+def _image_locations_set(image_id, locations):
     repo.reset()
 
     image = repo.load('locations').get(key=image_id)
@@ -653,11 +658,11 @@ def _set_properties_for_image(context, image, properties,
     :param session: A SQLAlchemy session to use (if present)
     """
     orig_properties = {}
-    for prop in image['properties']:
+    for prop in (image.get('properties') or []):
         orig_properties[prop['name']] = prop
 
     for name, value in properties.iteritems():
-        prop_values = {'image_id': image.id,
+        prop_values = {'image_id': image['id'],
                        'name': name,
                        'value': value}
         if name in orig_properties:
@@ -686,9 +691,9 @@ def _image_property_update(context, prop, values):
     Used internally by image_property_create and image_property_update
     """
     repo.reset()
-    _drop_protected_attrs(values)
+    drop_protected_attrs(values)
     values["deleted"] = False
-    merge_dict(prop, values)
+    prop = merge_dict(prop, values)
     repo.save(prop, Models.ImageProperty)
     return prop
 
@@ -841,10 +846,10 @@ def image_tag_delete(context, image_id, value, session=None):
     tags = filter(lambda x: x['value'] == value and
                             x['deleted'] == False, image['tags'])
 
-    if len(image['tags']) == 0:
+    if len(tags) == 0:
         raise exception.NotFound()
-    else
-        repo.soft_delete(image['tags'][0])
+    else:
+        repo.soft_delete(tags[0])
 
 def image_tag_get_all(context, image_id):
     """Get a list of tags for a specific image."""
