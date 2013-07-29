@@ -79,8 +79,19 @@ class And(object):
 
 
 class Any(object):
-    pass
-    
+    """ Returns true if the given specification matches
+    any of the values.
+    """
+    def __init__(self, spec):
+        self.spec = spec
+
+    def match(self, values):
+        for value in values:
+            if self.spec.match(value):
+                return True
+
+        return False
+
 
 class Or(object):
 
