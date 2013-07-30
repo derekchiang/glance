@@ -157,7 +157,7 @@ def image_destroy(context, image_id):
     # Perform authorization check
     _check_mutate_authorization(context, image)
 
-    _image_locations_set(image.id, [])
+    _image_locations_set(image['id'], [])
 
     repo.soft_delete(image)
 
