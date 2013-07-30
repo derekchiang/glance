@@ -177,6 +177,8 @@ def image_destroy(context, image_id):
 
 @trace
 def _normalize_locations(image):
+    print "imageeee:"
+    print image
     undeleted_locations = filter(lambda x: not x['deleted'], image['locations'])
     image['locations'] = [{'url': loc['value'],
                            'metadata': loc['meta_data']}
@@ -431,6 +433,9 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     repo.reset()
     filters = filters or {}
 
+    print 'the filters are:'
+    print filters
+
     image_filters = []
     other_filters = []
 
@@ -524,11 +529,14 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                 repo.filter((key, '=', v))
             else:
                 other_filters.append(Attr('properties',
-                                  Any(And(Attr('name', EQ(key)),
-                                          Attr('value',
-                                               EQ(v))))))
+                                          Any(And(Attr('name', EQ(key)),
+                                                  Attr('value',
+                                                       EQ(v))))))
 
-    images = repo.get()
+    # TODO: Should we load everything by default?
+    repo.load('locations').load('properties').load('tags').load('members')
+    
+    images = repo.get_all()
     other_filters = And(*other_filters)
     images = filter(lambda x: other_filters.match(x), images)
 

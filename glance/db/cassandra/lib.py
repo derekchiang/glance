@@ -118,6 +118,33 @@ class ImageRepo(object):
         obj.deleted_at = timeutils.utcnow()
         self.save(obj, model, override=True)
 
+    @staticmethod
+    def marshal(obj):
+        for k, v in obj.iteritems():
+            if k in __serialized_fields__:
+                obj[k] = pickle.dumps(v)
+            elif not isinstance(v, basestring):
+                obj[k] = MARSHAL_PREFIX + pickle.dumps(v)
+
+        return obj
+
+    @staticmethod
+    def unmarshal(obj, loads=None):
+        for k, v in obj.iteritems():
+            if isinstance(v, basestring):
+                if v.startswith(MARSHAL_PREFIX):
+                    obj[k] = pickle.loads(v[len(MARSHAL_PREFIX):])
+
+        if loads:
+            for load in loads:
+                l = obj.get(load)
+                if l:
+                    obj[load] = pickle.loads(l)
+                else:
+                    obj[load] = []
+
+        return obj
+
     def save(self, obj, model=Models.Image, override=False):
         # TODO: should we do copy() or deepcopy()?
         obj = obj.copy()
@@ -137,11 +164,7 @@ class ImageRepo(object):
 
             # Cassandra can only save strings, so
             # we need to marshal None and boolean
-            for k, v in obj.iteritems():
-                if k in __serialized_fields__:
-                    obj[k] = pickle.dumps(v)
-                elif not isinstance(v, basestring):
-                    obj[k] = MARSHAL_PREFIX + pickle.dumps(v)
+            self.marshal(obj)
 
             LOG.info('obj: ')
             LOG.info(key)
@@ -212,6 +235,7 @@ class ImageRepo(object):
         self.loads.append(load)
         return self
 
+
     # This method supports multiple usage pattern, including:
     # 1. filter(name='derek', age='20')
     # 2. filter(name='derek', (age, '>', 20))
@@ -230,46 +254,41 @@ class ImageRepo(object):
                 }.get(operator)
 
                 assert op is not None
+
+                obj = {column_name: value}
+                self.marshal(obj)
+
                 self.expressions.append(create_index_expression(column_name,
-                                                           value, op))
+                                                           obj[column_name], op))
 
         for k, v in kwargs.iteritems():
-            self.expressions.append(create_index_expression(k, v, index.EQ))
+            obj = {k: v}
+            self.marshal(obj)
+            self.expressions.append(create_index_expression(k, obj[k], index.EQ))
 
         return self
 
+    # TODO: This is a hack to get all records.  See if there is a
+    # more elegant way.
+    def get_all(self, *args, **kwargs):
+        kwargs['number'] = 99999999
+        return self.get(*args, **kwargs)
 
     def get(self, number=1, key=None):
         if key and isinstance(key, basestring):
             res = self.cf.get(key)
 
-            LOG.info('res is: ')
-            LOG.info(res)
-
-            for k, v in res.iteritems():
-                if isinstance(v, basestring) and v.startswith(MARSHAL_PREFIX):
-                    res[k] = pickle.loads(v[len(MARSHAL_PREFIX):])
-
-            for load in self.loads:
-                print 'loading stuff!'
-                l = res.get(load)
-                if l:
-                    res[load] = pickle.loads(l)
-                else:
-                    res[load] = []
+            self.unmarshal(res, self.loads)
 
             print res
             return res
         elif self.expressions != []:
-            clause = create_index_clause(self.expressions)
-            res = self.cf.get_indexed_slices(clause, number)
-            for index, item in enumerate(res):
+            clause = create_index_clause(self.expressions, count=number)
+            res = self.cf.get_indexed_slices(clause)
 
-                for k, v in item.iteritems():
-                    if v.startswith(MARSHAL_PREFIX):
-                        item[k] = pickle.loads(v[len(MARSHAL_PREFIX):])
+            results = []
+            for item in res:
+                key, columns = item
+                results.append(self.unmarshal(columns, self.loads))
 
-                for load in self.loads:
-                    res[index][load] = pickle.loads(item[load])
-
-            return res
+            return results
