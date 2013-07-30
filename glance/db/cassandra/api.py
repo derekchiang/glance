@@ -31,10 +31,14 @@ from glance.common import exception
 
 import glance.openstack.common.log as os_logging
 from glance.openstack.common import timeutils
+from glance.openstack.common import uuidutils
 
 from pycassa.pool import ConnectionPool
 from pycassa import NotFoundException
 from pycassa.system_manager import SystemManager, SIMPLE_STRATEGY
+from pycassa.columnfamily import ColumnFamily
+from pycassa.index import create_index_expression, create_index_clause
+from pycassa import index
 
 from glance.db.cassandra.models import register_models, unregister_models
 from glance.db.cassandra.lib import ImageRepo, \
@@ -46,13 +50,18 @@ from glance.db.cassandra.lib import ImageRepo, \
 from glance.db.cassandra.spec import EQ, Attr, Any, And, Or, NEQ
 
 pool = None
+image_cf = None
+inverted_indices_cf = None
 LOG = os_logging.getLogger(__name__)
 KEYSPACE_NAME = 'GLANCE'
-repo = None
 
 STATUSES = ['active', 'saving', 'queued', 'killed', 'pending_delete',
             'deleted']
 
+LOCATION_PREFIX = '__location_'
+PROPERTY_PREFIX = '__property_'
+TAG_PREFIX = '__tag_'
+MEMBER_PREFIX = '__member_'
 
 
 cassandra_connection_opt = cfg.StrOpt('glance_cassandra_url',
@@ -102,13 +111,13 @@ def setup_db_env():
     """
     Setup global configuration for database.
     """
-    global pool, repo
-
-    register_models()
+    global pool, image_cf, inverted_indices_cf
 
     pool = ConnectionPool(KEYSPACE_NAME,\
                           [CONF.glance_cassandra_url])
-    repo = ImageRepo(pool)
+    image_cf = ColumnFamily(pool, 'Images')
+    inverted_indices_cf = ColumnFamily(pool, 'InvertedIndices')
+    # repo = ImageRepo(pool)
 
 
 def clear_db_env():
@@ -116,7 +125,44 @@ def clear_db_env():
     Unset global configuration variables for database.
     """
     global pool
-    pool = None
+
+    pool.dispose()
+
+
+def save_inverted_indices(obj, model):
+    
+    prefix = {
+        Models.ImageMember: 'members',
+        Models.ImageLocation: 'locations',
+        Models.ImageProperty: 'properties',
+        Models.ImageTag: 'tags'
+    }.get(model)
+
+    image_id = obj.pop('image_id')
+
+    # Save all attributes as inverted indices
+    for k, v in obj.iteritems():
+        # row key would be something like:
+        # members.status=pending
+        row_key = prefix + '.' + str(k) + '=' + str(v)
+        inverted_indices_cf.insert(row_key, {image_id: ''})
+
+
+def delete_inverted_indices(obj, model):
+
+    prefix = {
+        Models.ImageMember: 'members',
+        Models.ImageLocation: 'locations',
+        Models.ImageProperty: 'properties',
+        Models.ImageTag: 'tags'
+    }.get(model)
+
+    image_id = obj.pop('image_id')
+
+    for k, v in obj.iteritems():
+        row_key = prefix + '.' + str(k) + '=' + str(v)
+        inverted_indices_cf.insert(row_key, [image_id])
+
 
 
 def _check_mutate_authorization(context, image):
@@ -150,35 +196,15 @@ def image_update(context, image_id, values, purge_props=False):
 @trace
 def image_destroy(context, image_id):
     """Destroy the image or raise if it does not exist."""
-    repo.reset()
 
     image = _image_get(context, image_id)
 
-    # Perform authorization check
-    _check_mutate_authorization(context, image)
+    image_cf.remove(image_id)
 
-    _image_locations_set(image['id'], [])
-
-    repo.soft_delete(image)
-
-    for prop in image.properties:
-        image_property_delete(context, prop.name,
-                              image_id)
-
-    members = _image_member_find(context, image_id=image_id)
-    for memb in members:
-        _image_member_delete(context, memb)
-
-    tag_values = image_tag_get_all(context, image_id)
-    for tag_value in tag_values:
-        image_tag_delete(context, image_id, tag_value)
-
-    return _normalize_locations(image)
+    return _transform_image(image)
 
 @trace
 def _normalize_locations(image):
-    print "imageeee:"
-    print image
     undeleted_locations = filter(lambda x: not x['deleted'], image['locations'])
     image['locations'] = [{'url': loc['value'],
                            'metadata': loc['meta_data']}
@@ -189,24 +215,40 @@ def _normalize_locations(image):
 def image_get(context, image_id, session=None, force_show_deleted=False):
     image = _image_get(context, image_id,
                        force_show_deleted=force_show_deleted)
-    image = _normalize_locations(image)
-    print ('finally')
-    print (type(image))
-    print (image)
+    image = _transform_image(image)
     return image
+
+def _transform_image(image):
+    locations = []
+    properties = []
+    tags = []
+    members = []
+    transformed_image = {}
+    for column, value in image.iteritems():
+        if column.startswith(LOCATION_PREFIX):
+            locations.append(value)
+        elif column.startswith('__property'):
+            properties.append(value)
+        elif column.startswith('__tag'):
+            tags.append(value)
+        elif column.startswith('__member'):
+            members.append(value)
+        else:
+            transformed_image[column] = value
+
+    transformed_image['locations'] = locations
+    transformed_image['properties'] = properties
+    transformed_image['tags'] = tags
+    transformed_image['members'] = members
+
+    return transformed_image
 
 @trace
 def _image_get(context, image_id, force_show_deleted=False):
     """Get an image or raise if it does not exist."""
-    repo.reset()
-
     try:
-        # TODO: do we want to load everything by default?
-        image = repo.load('locations').load('properties')\
-                    .load('tags').load('members').get(key=image_id)
-        if not force_show_deleted and not _can_show_deleted(context):
-            if image.deleted == True:
-                raise NotFoundException()
+        image = image_cf.get(image_id)
+
     except NotFoundException:
         msg = (_("No image found with ID %s") % image_id)
         LOG.debug(msg)
@@ -430,21 +472,17 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                       an admin the equivalent set of images which it would see
                       if it were a regular user
     """
-    repo.reset()
     filters = filters or {}
-
-    print 'the filters are:'
-    print filters
 
     image_filters = []
     other_filters = []
 
     if (not context.is_admin) or admin_as_user == True:
-        image_filters.append(('is_public', '=', True))
+        image_filters.append(create_index_expression('is_public', True, index.EQ))
         other_filters.append(Attr('members.deleted', EQ(False)))
 
         if context.owner is not None:
-            image_filters.append(('owner', '=', context.owner))
+            image_filters.append(create_index_expression('owner', context.owner, index.EQ))
             other_filters.append(Attr('members.member',
                                       EQ(context, context.owner)))
             if member_status != 'all':
@@ -453,27 +491,25 @@ def image_get_all(context, filters=None, marker=None, limit=None,
 
         other_filters = [And(*other_filters)]
 
-    repo.filter(*image_filters)
-
     if 'visibility' in filters:
         visibility = filters.pop('visibility')
         if visibility == 'public':
-            repo.filter(is_public=True)
+            image_filters.append(create_index_expression('is_public', True, index.EQ))
         elif visibility == 'private':
-            repo.filter(is_public=False)
+            image_filters.append(create_index_expression('is_public', False, index.EQ))
             if context.owner is not None and ((not context.is_admin)
                                               or admin_as_user == True):
-                repo.filter(owner=context.owner)
+                image_filters.append('owner', context.owner, index.EQ)
         else:
             other_filters.extend([Attr('members.member', EQ(context.owner)),
                                   Attr('members.deleted', EQ(False))])
-            repo.reset()
+            # TODO: exactly why are we doing this?
+            image_filters = []
 
     if is_public is not None:
-        repo.filter(is_public=is_public)
+        image_filters.append(create_index_expression('is_public', is_public, index.EQ))
 
     if 'is_public' in filters:
-        # TODO: the spec library does not support 'Any' yet
         other_filters.append(Attr('properties',
                                   Any(And(Attr('name', EQ('is_public')),
                                           Attr('value',
@@ -484,32 +520,27 @@ def image_get_all(context, filters=None, marker=None, limit=None,
 
     if 'checksum' in filters:
         checksum = filters.get('checksum')
-        repo.filter(checksum=checksum)
+        image_filters.append(create_index_expression('checksum', checksum, index.EQ))
 
     if 'changes-since' in filters:
         # normalize timestamp to UTC, as sqlalchemy doesn't appear to
         # respect timezone offsets
         changes_since = timeutils.normalize_time(filters.pop('changes-since'))
-        repo.filter(('updated_at', '>', changes_since))
+        image_filters.append(create_index_expression('updated_at', changes_since, index.GT))
         showing_deleted = True
 
-    if 'deleted' in filters:
-        deleted_filter = filters.pop('deleted')
-        repo.filter(deleted=deleted_filter)
-        showing_deleted = deleted_filter
-        # TODO(bcwaldon): handle this logic in registry server
-        if not deleted_filter:
-            other_filters.append(Attr('status', NEQ('killed')))
+
+    other_filters.append(Attr('status', NEQ('killed')))
 
 
-    for (k, v) in filters.pop('properties', {}).items():
+    for k, v in filters.pop('properties', {}).iteritems():
         other_filters.append(Attr('properties',
                                   Any(And(Attr('name', EQ(k)),
                                           Attr('value',
                                                EQ(v)),
                                           Attr('deleted', EQ(False))))))
 
-    for (k, v) in filters.items():
+    for k, v in filters.iteritems():
         if v is not None:
             key = k
             if k.endswith('_min') or k.endswith('_max'):
@@ -522,27 +553,26 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                     raise exception.InvalidFilterRangeValue(msg)
 
             if k.endswith('_min'):
-                repo.filter((key, '>=', v))
+                image_filters.append(create_index_expression(key, v, index.GTE))
             elif k.endswith('_max'):
-                repo.filter((key, '<=', v))
-            elif hasattr(models.Image, key):
-                repo.filter((key, '=', v))
+                image_filters.append(create_index_expression(key, v, index.LTE))
+            elif key in IMAGE_FIELDS:
+                image_filters.append(create_index_expression(key, v, index.EQ))
             else:
                 other_filters.append(Attr('properties',
                                           Any(And(Attr('name', EQ(key)),
                                                   Attr('value',
                                                        EQ(v))))))
 
-    # TODO: Should we load everything by default?
-    repo.load('locations').load('properties').load('tags').load('members')
-    
-    images = repo.get_all()
+    # TODO: Setting count to a large number to get all images; not sure if there is a more
+    # elegant way
+    images = image_cf.get_indexed_slices(create_index_clause(image_filters, count=99999999))
     other_filters = And(*other_filters)
     images = filter(lambda x: other_filters.match(x), images)
 
     # TODO: pagination
 
-    return [_normalize_locations(image) for image in repo.get()]
+    return [_transform_image(image) for image in images]
 
 @trace
 def _validate_image(values):
@@ -552,8 +582,6 @@ def _validate_image(values):
 
     :param values: Mapping of image metadata to check
     """
-    LOG.info('values: ')
-    LOG.info(values)
     status = values.get('status')
 
     status = values.get('status', None)
@@ -602,6 +630,7 @@ def _image_update(context, values, image_id, purge_props=False):
     if image_id:
         image = _image_get(context, image_id)
 
+        image_cf.remove(image_id)
         # Perform authorization check
         _check_mutate_authorization(context, image)
     else:
@@ -616,7 +645,8 @@ def _image_update(context, values, image_id, purge_props=False):
 
         values['is_public'] = bool(values.get('is_public', False))
         values['protected'] = bool(values.get('protected', False))
-        image = repo.create(Models.Image)
+
+        image = create(Models.Image)
 
     # Need to canonicalize ownership
     if 'owner' in values and not values['owner']:
@@ -636,44 +666,40 @@ def _image_update(context, values, image_id, purge_props=False):
     image = merge_dict(image, values)
     values = _validate_image(image)
 
-    print 'the image is: '
-    print image
-
-    try:
-        # TODO: discuss whether we actually want to override
-        # stuff here
-        repo.save(image, override=True)
-    except ImageIdDuplicateException:
-        raise exception.Duplicate("Image ID %s already exists!"
-                                  % values['id'])
-
     _set_properties_for_image(context, image, properties, purge_props)
 
     if location_data is not None:
-        _image_locations_set(image['id'], location_data)
+        _image_locations_set(image, location_data)
 
-    return image_get(context, image['id'])
+    # TODO: No exception will be raised if the given key
+    # already exists.  Do we need to worry about overriding
+    # stuff anyway?
+    image_cf.insert(image['id'], image)
+
+    return _transform_image(image)
 
 @trace
-def _image_locations_set(image_id, locations):
-    repo.reset()
+def _image_locations_set(image, locations):
 
-    image = repo.load('locations').get(key=image_id)
-
-    for location in image['locations']:
-        if location['deleted'] == False:
-            repo.soft_delete(location)
+    # Remove existing locations
+    for column, value in image.iteritems();
+        column.startswith(LOCATION_PREFIX)
+        delete_inverted_indices(value, Models.ImageLocation)
+        del image[column]
 
     # TODO: As it currently stands, if there are N locations given,
     # then we will issue N queries to Cassandra, each inserting one
     # location.  But in fact, we could totally insert all locations
     # at once.  We might want to optimize this.
+
     for location in locations:
-        new_location = repo.create(Models.ImageLocation,
-                                   image_id=image_id,
-                                   value=location['url'],
-                                   meta_data=location['metadata'])
-        repo.save(new_location, Models.ImageLocation)
+        new_location = create(Models.ImageLocation,
+                              image_id=image_id,
+                              value=location['url'],
+                              meta_data=location['metadata'])
+        save_inverted_indices(new_location, Models.ImageLocation)
+        uuid = LOCATION_PREFIX + uuidutils.generate_uuid()
+        image[uuid] = new_location
 
 
 def _set_properties_for_image(context, image, properties,
