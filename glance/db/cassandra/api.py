@@ -206,26 +206,32 @@ def create(model, **kwargs):
 
     elif model == Models.ImageMember:
         return merge_dict(base, {
+            'id': MEMBER_PREFIX + uuidutils.generate_uuid(),
             'can_share': False,
             'status': 'pending'
         })
 
     elif model == Models.ImageLocation:
         return merge_dict(base, {
+            'id': LOCATION_PREFIX + uuidutils.generate_uuid(),
             'meta_data': {}
         })
 
     elif model == Models.ImageProperty:
-        return merge_dict(base, {})
+        return merge_dict(base, {
+            'id': PROPERTY_PREFIX + uuidutils.generate_uuid()
+        })
 
     elif model == Models.ImageTag:
-        return merge_dict(base, {})
+        return merge_dict(base, {
+            'id': TAG_PREFIX + uuidutils.generate_uuid()
+        })
 
     else:
         raise Exception()
 
 def dumps(obj):
-    return json.dumps(obj, default=lambda x: time.mktime(x.timetuple()))
+    return MARSHAL_PREFIX + json.dumps(obj, default=lambda x: time.mktime(x.timetuple()))
 
 def loads(string):
     if string.startswith(MARSHAL_PREFIX):
@@ -245,7 +251,7 @@ def marshal_image(obj):
     obj = obj.copy()
     for k, v in obj.iteritems():
         if not isinstance(v, basestring):
-            obj[k] = MARSHAL_PREFIX + dumps(v)
+            obj[k] = dumps(v)
 
     return obj
 
@@ -271,6 +277,16 @@ def _check_mutate_authorization(context, image):
             exc_class = exception.Forbidden
 
         raise exc_class(msg)
+
+
+__protected_attributes__ = set([
+        "created_at", "updated_at", "deleted_at", "deleted"])
+
+
+def drop_protected_attrs(vals):
+    for attr in __protected_attributes__:
+        if attr in vals:
+            del vals[attr]
         
 
 @trace
@@ -804,8 +820,7 @@ def _image_locations_set(image, locations):
                               url=location['url'],
                               metadata=location['metadata'])
         save_inverted_indices(new_location, Models.ImageLocation)
-        uuid = LOCATION_PREFIX + uuidutils.generate_uuid()
-        image[uuid] = new_location
+        image[new_location['id']] = new_location
 
 
 def _set_properties_for_image(context, image, properties,
@@ -857,7 +872,7 @@ def _image_property_update(context, prop, values):
     save_inverted_indices(prop, Models.ImageProperty)
     uuid = PROPERTY_PREFIX + uuidutils.generate_uuid()
 
-    image_cf.insert(prop['image_id'], {uuid: (MARSHAL_PREFIX + dumps(prop))})
+    image_cf.insert(prop['image_id'], {uuid: (dumps(prop))})
 
     return prop
 
@@ -880,49 +895,56 @@ def image_property_delete(context, prop_name, image_id, session=None):
 
 def image_member_create(context, values, session=None):
     """Create an ImageMember object"""
-    memb_ref = models.ImageMember()
-    _image_member_update(context, memb_ref, values, session=session)
-    return _image_member_format(memb_ref)
+    memb = create(Models.ImageMember)
+    memb = _image_member_update(context, memb, values)
+    return memb
 
 
 def image_member_update(context, memb_id, values):
     """Update an ImageMember object"""
-    session = _get_session()
-    memb_ref = _image_member_get(context, memb_id, session)
-    _image_member_update(context, memb_ref, values, session)
-    return _image_member_format(memb_ref)
+
+    memb = _image_member_get(context, memb_id)
+    return _image_member_update(context, memb, values, session)
 
 
-def _image_member_update(context, memb_ref, values, session=None):
+def _image_member_update(context, memb, values):
     """Apply supplied dictionary of values to a Member object."""
-    _drop_protected_attrs(models.ImageMember, values)
+    drop_protected_attrs(values)
     values["deleted"] = False
     values.setdefault('can_share', False)
-    memb_ref.update(values)
-    memb_ref.save(session=session)
-    return memb_ref
+
+    remove_inverted_indices(memb, Models.ImageMember)
+
+    memb = merge_dict(memb, values)
+
+    save_inverted_indices(memb, Models.ImageMember)
+
+    image_cf.insert(memb['image_id'], {
+        memb['id']: dumps(memb)
+    })
+
+    return memb
 
 
 def image_member_delete(context, memb_id, session=None):
     """Delete an ImageMember object"""
-    session = session or _get_session()
-    member_ref = _image_member_get(context, memb_id, session)
-    _image_member_delete(context, member_ref, session)
+    member = _image_member_get(context, memb_id)
+    remove_inverted_indices(memb)
+    image_cf.remove(memb['image_id'], [memb['id']])
 
 
-def _image_member_delete(context, memb_ref, session):
-    memb_ref.delete(session=session)
-
-
-def _image_member_get(context, memb_id, session):
+def _image_member_get(context, memb_id):
     """Fetch an ImageMember entity by id"""
 
     image_ids = query_inverted_indices(Models.ImageMember, 'id', memb_id)
-    
-    for image_id in image_ids:
-        image = image_cf.get(image_id)
 
-    return query.one()
+    # TODO: is this reasonable?  Can a member belong to multiple images?
+    image_id = image_ids[0]
+
+    image = image_cf.get(image_id)
+    column_key = memb_id
+
+    return loads(image[column_key])
 
 
 def image_member_find(context, image_id=None, member=None, status=None):
