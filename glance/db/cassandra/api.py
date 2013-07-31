@@ -24,7 +24,8 @@ Defines interface for DB access
 
 import logging
 import time
-import pickle
+import json
+from datetime import datetime
 
 from oslo.config import cfg
 
@@ -68,6 +69,8 @@ MARSHAL_PREFIX = '__'
 IMAGE_FIELDS = ['id', 'name', 'disk_format', 'container_format', 'size',
                 'status', 'is_public', 'checksum', 'min_disk', 'min_ram',
                 'owner', 'protected']
+# Fields that are supposed to be datetime
+DATETIME_FIELDS = ['created_at', 'updated_at', 'deleted_at']
 
 
 cassandra_connection_opt = cfg.StrOpt('glance_cassandra_url',
@@ -139,14 +142,17 @@ def clear_db_env():
     pool.dispose()
 
 
-def save_inverted_indices(obj, model):
-    
-    prefix = {
+def get_prefix(model):
+    return {
         Models.ImageMember: 'members',
         Models.ImageLocation: 'locations',
         Models.ImageProperty: 'properties',
         Models.ImageTag: 'tags'
     }.get(model)
+
+def save_inverted_indices(obj, model):
+    
+    prefix = get_prefix(model)
 
     image_id = obj['image_id']
 
@@ -161,12 +167,7 @@ def save_inverted_indices(obj, model):
 
 def delete_inverted_indices(obj, model):
 
-    prefix = {
-        Models.ImageMember: 'members',
-        Models.ImageLocation: 'locations',
-        Models.ImageProperty: 'properties',
-        Models.ImageTag: 'tags'
-    }.get(model)
+    prefix = get_prefix(model)
 
     image_id = obj['image_id']
 
@@ -174,6 +175,14 @@ def delete_inverted_indices(obj, model):
         if k != 'image_id':
             row_key = prefix + '.' + str(k) + '=' + str(v)
             inverted_indices_cf.remove(row_key, [image_id])
+
+
+def query_inverted_indices(model, key, value):
+    
+    prefix = get_prefix(model)
+    row_key = prefix + '.' + str(key) + '=' + str(value)
+
+    return inverted_indices_cf.get(row_key)
 
 
 def create(model, **kwargs):
@@ -215,18 +224,41 @@ def create(model, **kwargs):
     else:
         raise Exception()
 
+def dumps(obj):
+    return json.dumps(obj, default=lambda x: time.mktime(x.timetuple()))
+
+def loads(string):
+    if string.startswith(MARSHAL_PREFIX):
+        obj = json.loads(string[len(MARSHAL_PREFIX):])
+    else:
+        obj = json.loads(string)
+
+    if isinstance(obj, dict):
+        for k, v in obj.iteritems():
+            if k in DATETIME_FIELDS:
+                obj[k] = datetime.fromtimestamp(v)
+
+    return obj
+
 
 def marshal_image(obj):
+    obj = obj.copy()
     for k, v in obj.iteritems():
         if not isinstance(v, basestring):
-            obj[k] = MARSHAL_PREFIX + pickle.dumps(v)
+            obj[k] = MARSHAL_PREFIX + dumps(v)
 
-def unmarshal_image(obj, loads=None):
+    return obj
+
+
+def unmarshal_image(obj):
+    obj = obj.copy()
+
     for k, v in obj.iteritems():
         if isinstance(v, basestring):
             if v.startswith(MARSHAL_PREFIX):
-                obj[k] = pickle.loads(v[len(MARSHAL_PREFIX):])
+                obj[k] = loads(v)
 
+    return obj
 
 
 def _check_mutate_authorization(context, image):
@@ -290,19 +322,19 @@ def _transform_image(image):
         if column.startswith(LOCATION_PREFIX):
             # If it's string, it needs to be unmarshalled
             if isinstance(value, basestring):
-                value = pickle.loads(value[len(MARSHAL_PREFIX):]) 
+                value = loads(value) 
             locations.append(value)
         elif column.startswith('__property'):
             if isinstance(value, basestring):
-                value = pickle.loads(value[len(MARSHAL_PREFIX):]) 
+                value = loads(value) 
             properties.append(value)
         elif column.startswith('__tag'):
             if isinstance(value, basestring):
-                value = pickle.loads(value[len(MARSHAL_PREFIX):]) 
+                value = loads(value) 
             tags.append(value)
         elif column.startswith('__member'):
             if isinstance(value, basestring):
-                value = pickle.loads(value[len(MARSHAL_PREFIX):]) 
+                value = loads(value) 
             members.append(value)
         else:
             transformed_image[column] = value
@@ -322,7 +354,7 @@ def _image_get(context, image_id, force_show_deleted=False):
     """Get an image or raise if it does not exist."""
     try:
         image = image_cf.get(image_id)
-        unmarshal_image(image)
+        image = unmarshal_image(image)
 
     except NotFoundException:
         msg = (_("No image found with ID %s") % image_id)
@@ -742,16 +774,13 @@ def _image_update(context, values, image_id, purge_props=False):
     if location_data is not None:
         _image_locations_set(image, location_data)
 
-    print 'image is: '
-    print image
-
-    # Marshal all fields that are not string
-    marshal_image(image)
-
     # TODO: No exception will be raised if the given key
     # already exists.  Do we need to worry about overriding
     # stuff anyway?
-    image_cf.insert(image['id'], image)
+    image_cf.insert(image['id'], marshal_image(image))
+
+    print 'image is: '
+    print image
 
     return _transform_image(image)
 
@@ -828,7 +857,7 @@ def _image_property_update(context, prop, values):
     save_inverted_indices(prop, Models.ImageProperty)
     uuid = PROPERTY_PREFIX + uuidutils.generate_uuid()
 
-    image_cf.insert(prop['image_id'], {uuid: (MARSHAL_PREFIX + pickle.dumps(prop))})
+    image_cf.insert(prop['image_id'], {uuid: (MARSHAL_PREFIX + dumps(prop))})
 
     return prop
 
@@ -842,7 +871,7 @@ def image_property_delete(context, prop_name, image_id, session=None):
     image = image_cf.get(image_id)
     for column, value in image.iteritems():
         if column.startswith(PROPERTY_PREFIX):
-            value = pickle.loads(value[len(MARSHAL_PREFIX):])  
+            value = loads(value)  
             if value['name'] == prop_name:
                 remove_columns.append(column)
 
@@ -854,19 +883,6 @@ def image_member_create(context, values, session=None):
     memb_ref = models.ImageMember()
     _image_member_update(context, memb_ref, values, session=session)
     return _image_member_format(memb_ref)
-
-
-def _image_member_format(member_ref):
-    """Format a member ref for consumption outside of this module"""
-    return {
-        'id': member_ref['id'],
-        'image_id': member_ref['image_id'],
-        'member': member_ref['member'],
-        'can_share': member_ref['can_share'],
-        'status': member_ref['status'],
-        'created_at': member_ref['created_at'],
-        'updated_at': member_ref['updated_at']
-    }
 
 
 def image_member_update(context, memb_id, values):
@@ -900,8 +916,12 @@ def _image_member_delete(context, memb_ref, session):
 
 def _image_member_get(context, memb_id, session):
     """Fetch an ImageMember entity by id"""
-    query = session.query(models.ImageMember)
-    query = query.filter_by(id=memb_id)
+
+    image_ids = query_inverted_indices(Models.ImageMember, 'id', memb_id)
+    
+    for image_id in image_ids:
+        image = image_cf.get(image_id)
+
     return query.one()
 
 
@@ -911,32 +931,60 @@ def image_member_find(context, image_id=None, member=None, status=None):
     :param image_id: identifier of image entity
     :param member: tenant to which membership has been granted
     """
-    session = _get_session()
-    members = _image_member_find(context, session, image_id, member, status)
+    members = _image_member_find(context, image_id, member, status)
     return [_image_member_format(m) for m in members]
 
 
-def _image_member_find(context, session, image_id=None,
+def _image_member_find(context, image_id=None,
                        member=None, status=None):
-    query = session.query(models.ImageMember)
-    query = query.filter_by(deleted=False)
 
-    if not context.is_admin:
-        query = query.join(models.Image)
-        filters = [
-            models.Image.owner == context.owner,
-            models.ImageMember.member == context.owner,
-        ]
-        query = query.filter(sa_sql.or_(*filters))
+    if image.owner == context.owner:
+        image_is_owner = True
+    else:
+        image_is_owner = False
 
-    if image_id is not None:
-        query = query.filter(models.ImageMember.image_id == image_id)
+    criteria = [Or(Identity(image_is_owner, EQ(True)),
+                   Attr('member', EQ(context.owner)))]
+
     if member is not None:
-        query = query.filter(models.ImageMember.member == member)
-    if status is not None:
-        query = query.filter(models.ImageMember.status == status)
+        criteria.append(Attr('member', EQ(member)))
 
-    return query.all()
+    if status is not None:
+        criteria.append(Attr('status', EQ(status)))
+
+    criteria = And(*criteria)
+
+    def find_matching_members(image):
+        members = []
+        for column, value in image.iteritems():
+            if column.startswith(MEMBER_PREFIX):
+                m = loads(value)
+                if criteria.match(m):
+                    members.append(m)
+
+        return members
+
+    if image_id:
+        image = image_cf.get(image_id)
+    
+        return find_matching_members(image)
+
+    else:
+        image_ids = set()
+        if member is not None:
+            image_ids = image_ids.union(
+                query_inverted_indices(Models.ImageMember, 'member', member))
+
+        if status is not None:
+            image_ids = image_ids.union(
+                query_inverted_indices(Models.ImageMember, 'status', status))
+
+        members = []
+        for image_id in image_ids:
+            image = image_cf.get(image_id)
+            members.extend(find_matching_members(image))
+
+        return members
 
 
 # pylint: disable-msg=C0111

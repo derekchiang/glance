@@ -52,6 +52,14 @@ class Attr(object):
 
         return self.value_spec.match(value)
 
+class Identify(object):
+    def __init__(self, obj, value_spec):
+        self.obj = obj
+        self.value_spec = value_spec
+
+    def match(self, _):
+        return self.value_spec.match(self.obj)
+
 
 class Not(object):
 
