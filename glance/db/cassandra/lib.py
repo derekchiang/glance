@@ -65,58 +65,20 @@ def drop_protected_attrs(vals):
         for attr in __protected_attributes__:
             if attr in vals:
                 del vals[attr]
-
+                
+# TODO: create a new repo every time instead of reset
 class ImageRepo(object):
     def __init__(self, pool):
         self.pool = pool
         self.cf = ColumnFamily(pool, 'Images', dict_class=dict)
         self.inverted_cf = ColumnFamily(pool, 'Inverted_indices', dict_class=dict)
 
-    @staticmethod
-    def create(model, **kwargs):
-        # Create the given model
-        base = merge_dict({
-            'created_at': timeutils.utcnow(),
-            'updated_at': timeutils.utcnow(),
-            'deleted': False,
-            'checksum': None,
-            'disk_format': None,
-            'container_format': None
-        }, kwargs)
-
-        if model == Models.Image:
-            return merge_dict(base, {
-                'id': uuidutils.generate_uuid(),
-                'is_public': False,
-                'min_disk': 0,
-                'min_ram': 0,
-                'protected': False
-            })
-
-        elif model == Models.ImageMember:
-            return merge_dict(base, {
-                'can_share': False,
-                'status': 'pending'
-            })
-
-        elif model == Models.ImageLocation:
-            return merge_dict(base, {
-                'meta_data': {}
-            })
-
-        elif model == Models.ImageProperty:
-            return merge_dict(base, {})
-
-        elif model == Models.ImageTag:
-            return merge_dict(base, {})
-
-        else:
-            raise UndefinedModelException()
-
     def soft_delete(self, obj, model=Models.Image):
         obj.deleted = True
         obj.deleted_at = timeutils.utcnow()
         self.save(obj, model, override=True)
+
+        # TODO
 
     @staticmethod
     def marshal(obj):
@@ -186,6 +148,7 @@ class ImageRepo(object):
                 # members.status=pending
                 row_key = prefix + '.' + str(k) + '=' + str(v)
 
+                # TODO: just append a column
                 try:
                     original = self.inverted_cf.get(row_key)
                     new_dict = merge_dict(original, {image_id: ''})

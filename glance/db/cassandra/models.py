@@ -25,13 +25,11 @@ from pycassa.system_manager import SystemManager, SIMPLE_STRATEGY, \
                             UTF8_TYPE, INT_TYPE, BOOLEAN_TYPE, DATE_TYPE
 
 KEYSPACE_NAME = 'GLANCE'
-sys = None
 
 def register_models():
     """
     Creates database tables for all models with the given engine
     """
-    global sys
     sys = SystemManager()
 
     if KEYSPACE_NAME not in sys.list_keyspaces():
@@ -65,17 +63,17 @@ def register_models():
         sys.create_index(KEYSPACE_NAME, 'Images', 'id', 'UTF8Type')
         sys.create_index(KEYSPACE_NAME, 'Images', 'is_public', 'BooleanType')
 
-        sys.create_column_family(KEYSPACE_NAME, 'Inverted_indices')
+        sys.create_column_family(KEYSPACE_NAME, 'InvertedIndices')
 
 
 def unregister_models():
     """
     Drops database tables for all models with the given engine
     """
-    global sys
+    sys = SystemManager()
 
     sys.drop_column_family(KEYSPACE_NAME, 'Images')
-    sys.drop_column_family(KEYSPACE_NAME, 'Inverted_indices')
+    sys.drop_column_family(KEYSPACE_NAME, 'InvertedIndices')
 
     sys.drop_keyspace(KEYSPACE_NAME)
     sys.close()

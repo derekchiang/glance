@@ -24,6 +24,7 @@ Defines interface for DB access
 
 import logging
 import time
+import pickle
 
 from oslo.config import cfg
 
@@ -62,6 +63,11 @@ LOCATION_PREFIX = '__location_'
 PROPERTY_PREFIX = '__property_'
 TAG_PREFIX = '__tag_'
 MEMBER_PREFIX = '__member_'
+MARSHAL_PREFIX = '__'
+
+IMAGE_FIELDS = ['id', 'name', 'disk_format', 'container_format', 'size',
+                'status', 'is_public', 'checksum', 'min_disk', 'min_ram',
+                'owner', 'protected']
 
 
 cassandra_connection_opt = cfg.StrOpt('glance_cassandra_url',
@@ -113,6 +119,10 @@ def setup_db_env():
     """
     global pool, image_cf, inverted_indices_cf
 
+    sys = SystemManager()
+    if KEYSPACE_NAME not in sys.list_keyspaces():
+        register_models()
+
     pool = ConnectionPool(KEYSPACE_NAME,\
                           [CONF.glance_cassandra_url])
     image_cf = ColumnFamily(pool, 'Images')
@@ -138,14 +148,15 @@ def save_inverted_indices(obj, model):
         Models.ImageTag: 'tags'
     }.get(model)
 
-    image_id = obj.pop('image_id')
+    image_id = obj['image_id']
 
     # Save all attributes as inverted indices
     for k, v in obj.iteritems():
         # row key would be something like:
         # members.status=pending
-        row_key = prefix + '.' + str(k) + '=' + str(v)
-        inverted_indices_cf.insert(row_key, {image_id: ''})
+        if k != 'image_id':
+            row_key = prefix + '.' + str(k) + '=' + str(v)
+            inverted_indices_cf.insert(row_key, {image_id: ''})
 
 
 def delete_inverted_indices(obj, model):
@@ -157,11 +168,64 @@ def delete_inverted_indices(obj, model):
         Models.ImageTag: 'tags'
     }.get(model)
 
-    image_id = obj.pop('image_id')
+    image_id = obj['image_id']
 
     for k, v in obj.iteritems():
-        row_key = prefix + '.' + str(k) + '=' + str(v)
-        inverted_indices_cf.insert(row_key, [image_id])
+        if k != 'image_id':
+            row_key = prefix + '.' + str(k) + '=' + str(v)
+            inverted_indices_cf.remove(row_key, [image_id])
+
+
+def create(model, **kwargs):
+    # Create the given model
+    base = merge_dict({
+        'created_at': timeutils.utcnow(),
+        'updated_at': timeutils.utcnow(),
+    }, kwargs)
+
+    if model == Models.Image:
+        return merge_dict(base, {
+            'id': uuidutils.generate_uuid(),
+            'is_public': False,
+            'min_disk': 0,
+            'min_ram': 0,
+            'protected': False,
+            'checksum': None,
+            'disk_format': None,
+            'container_format': None
+        })
+
+    elif model == Models.ImageMember:
+        return merge_dict(base, {
+            'can_share': False,
+            'status': 'pending'
+        })
+
+    elif model == Models.ImageLocation:
+        return merge_dict(base, {
+            'meta_data': {}
+        })
+
+    elif model == Models.ImageProperty:
+        return merge_dict(base, {})
+
+    elif model == Models.ImageTag:
+        return merge_dict(base, {})
+
+    else:
+        raise Exception()
+
+
+def marshal_image(obj):
+    for k, v in obj.iteritems():
+        if not isinstance(v, basestring):
+            obj[k] = MARSHAL_PREFIX + pickle.dumps(v)
+
+def unmarshal_image(obj, loads=None):
+    for k, v in obj.iteritems():
+        if isinstance(v, basestring):
+            if v.startswith(MARSHAL_PREFIX):
+                obj[k] = pickle.loads(v[len(MARSHAL_PREFIX):])
 
 
 
@@ -180,8 +244,6 @@ def _check_mutate_authorization(context, image):
 @trace
 def image_create(context, values):
     """Create an image from the values dictionary."""
-    print 'the values are: '
-    print values
     return _image_update(context, values, None, False)
 
 @trace
@@ -226,12 +288,21 @@ def _transform_image(image):
     transformed_image = {}
     for column, value in image.iteritems():
         if column.startswith(LOCATION_PREFIX):
+            # If it's string, it needs to be unmarshalled
+            if isinstance(value, basestring):
+                value = pickle.loads(value[len(MARSHAL_PREFIX):]) 
             locations.append(value)
         elif column.startswith('__property'):
+            if isinstance(value, basestring):
+                value = pickle.loads(value[len(MARSHAL_PREFIX):]) 
             properties.append(value)
         elif column.startswith('__tag'):
+            if isinstance(value, basestring):
+                value = pickle.loads(value[len(MARSHAL_PREFIX):]) 
             tags.append(value)
         elif column.startswith('__member'):
+            if isinstance(value, basestring):
+                value = pickle.loads(value[len(MARSHAL_PREFIX):]) 
             members.append(value)
         else:
             transformed_image[column] = value
@@ -241,6 +312,9 @@ def _transform_image(image):
     transformed_image['tags'] = tags
     transformed_image['members'] = members
 
+
+    print "transformed image: "
+    print transformed_image
     return transformed_image
 
 @trace
@@ -248,6 +322,7 @@ def _image_get(context, image_id, force_show_deleted=False):
     """Get an image or raise if it does not exist."""
     try:
         image = image_cf.get(image_id)
+        unmarshal_image(image)
 
     except NotFoundException:
         msg = (_("No image found with ID %s") % image_id)
@@ -516,8 +591,6 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                                                EQ(filters.pop('is_public'))),
                                           Attr('deleted', EQ(False))))))
 
-    showing_deleted = False
-
     if 'checksum' in filters:
         checksum = filters.get('checksum')
         image_filters.append(create_index_expression('checksum', checksum, index.EQ))
@@ -527,8 +600,6 @@ def image_get_all(context, filters=None, marker=None, limit=None,
         # respect timezone offsets
         changes_since = timeutils.normalize_time(filters.pop('changes-since'))
         image_filters.append(create_index_expression('updated_at', changes_since, index.GT))
-        showing_deleted = True
-
 
     other_filters.append(Attr('status', NEQ('killed')))
 
@@ -671,6 +742,12 @@ def _image_update(context, values, image_id, purge_props=False):
     if location_data is not None:
         _image_locations_set(image, location_data)
 
+    print 'image is: '
+    print image
+
+    # Marshal all fields that are not string
+    marshal_image(image)
+
     # TODO: No exception will be raised if the given key
     # already exists.  Do we need to worry about overriding
     # stuff anyway?
@@ -682,10 +759,10 @@ def _image_update(context, values, image_id, purge_props=False):
 def _image_locations_set(image, locations):
 
     # Remove existing locations
-    for column, value in image.iteritems();
-        column.startswith(LOCATION_PREFIX)
-        delete_inverted_indices(value, Models.ImageLocation)
-        del image[column]
+    for column, value in image.iteritems():
+        if column.startswith(LOCATION_PREFIX):
+            delete_inverted_indices(value, Models.ImageLocation)
+            del image[column]
 
     # TODO: As it currently stands, if there are N locations given,
     # then we will issue N queries to Cassandra, each inserting one
@@ -694,9 +771,9 @@ def _image_locations_set(image, locations):
 
     for location in locations:
         new_location = create(Models.ImageLocation,
-                              image_id=image_id,
-                              value=location['url'],
-                              meta_data=location['metadata'])
+                              image_id=image['id'],
+                              url=location['url'],
+                              metadata=location['metadata'])
         save_inverted_indices(new_location, Models.ImageLocation)
         uuid = LOCATION_PREFIX + uuidutils.generate_uuid()
         image[uuid] = new_location
@@ -736,7 +813,7 @@ def _set_properties_for_image(context, image, properties,
 
 def image_property_create(context, values):
     """Create an ImageProperty object"""
-    prop = repo.create(Models.ImageProperty)
+    prop = create(Models.ImageProperty)
     prop = _image_property_update(context, prop, values)
     return prop
 
@@ -745,11 +822,14 @@ def _image_property_update(context, prop, values):
     """
     Used internally by image_property_create and image_property_update
     """
-    repo.reset()
     drop_protected_attrs(values)
-    values["deleted"] = False
+
     prop = merge_dict(prop, values)
-    repo.save(prop, Models.ImageProperty)
+    save_inverted_indices(prop, Models.ImageProperty)
+    uuid = PROPERTY_PREFIX + uuidutils.generate_uuid()
+
+    image_cf.insert(prop['image_id'], {uuid: (MARSHAL_PREFIX + pickle.dumps(prop))})
+
     return prop
 
 
@@ -757,13 +837,17 @@ def image_property_delete(context, prop_name, image_id, session=None):
     """
     Used internally by image_property_create and image_property_update
     """
-    repo.reset()
-    image = repo.load('properties').get(key=image_id)
-    properties = image['properties']
+    remove_columns = []
 
-    for prop in properties:
-        if prop['name'] == prop_name:
-            repo.delete(prop)
+    image = image_cf.get(image_id)
+    for column, value in image.iteritems():
+        if column.startswith(PROPERTY_PREFIX):
+            value = pickle.loads(value[len(MARSHAL_PREFIX):])  
+            if value['name'] == prop_name:
+                remove_columns.append(column)
+
+    image_cf.remove(image_cf, remove_columns)
+
 
 def image_member_create(context, values, session=None):
     """Create an ImageMember object"""
