@@ -827,8 +827,8 @@ def _image_update(context, values, image_id, purge_props=False):
     # already exists.  Do we need to worry about overriding
     # stuff anyway?
     batch.insert(image_cf, image['id'], marshal_image(image))
-    
-    batch.send
+
+    batch.send()
 
     return _transform_image(image)
 
@@ -921,6 +921,9 @@ def image_property_delete(context, prop_name, image_id):
 
 def _image_property_delete(context, prop_names, image_id, batch=None):
     remove_columns = []
+
+    if prop_names == []:
+        return
 
     image = image_cf.get(image_id)
     for column, value in image.iteritems():
