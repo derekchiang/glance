@@ -41,6 +41,7 @@ from pycassa.system_manager import SystemManager, SIMPLE_STRATEGY
 from pycassa.columnfamily import ColumnFamily
 from pycassa.index import create_index_expression, create_index_clause
 from pycassa import index
+from pycassa.batch import Mutator
 
 from glance.db.cassandra.models import register_models, unregister_models
 from glance.db.cassandra.lib import ImageRepo, \
@@ -169,12 +170,13 @@ def delete_inverted_indices(obj, model):
 
     prefix = get_prefix(model)
 
-    image_id = obj['image_id']
+    image_id = obj.get('image_id')
 
-    for k, v in obj.iteritems():
-        if k != 'image_id':
-            row_key = prefix + '.' + str(k) + '=' + str(v)
-            inverted_indices_cf.remove(row_key, [image_id])
+    if image_id:
+        for k, v in obj.iteritems():
+            if k != 'image_id':
+                row_key = prefix + '.' + str(k) + '=' + str(v)
+                inverted_indices_cf.remove(row_key, [image_id])
 
 
 def query_inverted_indices(model, key, value):
@@ -184,51 +186,52 @@ def query_inverted_indices(model, key, value):
 
     return inverted_indices_cf.get(row_key)
 
-
-def create(model, **kwargs):
-    # Create the given model
-    base = merge_dict({
+def create_image(**kwargs):
+    return merge_dict({
         'created_at': timeutils.utcnow(),
         'updated_at': timeutils.utcnow(),
+        'id': uuidutils.generate_uuid(),
+        'is_public': False,
+        'min_disk': 0,
+        'min_ram': 0,
+        'protected': False,
+        'checksum': None,
+        'disk_format': None,
+        'container_format': None
     }, kwargs)
 
-    if model == Models.Image:
-        return merge_dict(base, {
-            'id': uuidutils.generate_uuid(),
-            'is_public': False,
-            'min_disk': 0,
-            'min_ram': 0,
-            'protected': False,
-            'checksum': None,
-            'disk_format': None,
-            'container_format': None
-        })
+def create_image_member(**kwargs):
+    return merge_dict({
+        'created_at': timeutils.utcnow(),
+        'updated_at': timeutils.utcnow(),
+        'id': MEMBER_PREFIX + uuidutils.generate_uuid(),
+        'can_share': False,
+        'status': 'pending'
+    }, kwargs)
 
-    elif model == Models.ImageMember:
-        return merge_dict(base, {
-            'id': MEMBER_PREFIX + uuidutils.generate_uuid(),
-            'can_share': False,
-            'status': 'pending'
-        })
+def create_image_location(**kwargs):
+    return merge_dict({
+        'created_at': timeutils.utcnow(),
+        'updated_at': timeutils.utcnow(),
+        'id': LOCATION_PREFIX + uuidutils.generate_uuid(),
+        'meta_data': {}
+    }, kwargs)
 
-    elif model == Models.ImageLocation:
-        return merge_dict(base, {
-            'id': LOCATION_PREFIX + uuidutils.generate_uuid(),
-            'meta_data': {}
-        })
+def create_image_property(**kwargs):
+    return merge_dict({
+        'created_at': timeutils.utcnow(),
+        'updated_at': timeutils.utcnow(),
+        'id': PROPERTY_PREFIX + uuidutils.generate_uuid()
+    }, kwargs)
 
-    elif model == Models.ImageProperty:
-        return merge_dict(base, {
-            'id': PROPERTY_PREFIX + uuidutils.generate_uuid()
-        })
 
-    elif model == Models.ImageTag:
-        return merge_dict(base, {
-            'id': TAG_PREFIX + uuidutils.generate_uuid()
-        })
+def create_image_tag(**kwargs):
+    return merge_dict({
+        'created_at': timeutils.utcnow(),
+        'updated_at': timeutils.utcnow(),
+        'id': TAG_PREFIX + uuidutils.generate_uuid()
+    }, dict2)
 
-    else:
-        raise Exception()
 
 def dumps(obj):
     return MARSHAL_PREFIX + json.dumps(obj, default=lambda x: time.mktime(x.timetuple()))
@@ -340,15 +343,15 @@ def _transform_image(image):
             if isinstance(value, basestring):
                 value = loads(value) 
             locations.append(value)
-        elif column.startswith('__property'):
+        elif column.startswith(PROPERTY_PREFIX):
             if isinstance(value, basestring):
                 value = loads(value) 
             properties.append(value)
-        elif column.startswith('__tag'):
+        elif column.startswith(TAG_PREFIX):
             if isinstance(value, basestring):
                 value = loads(value) 
             tags.append(value)
-        elif column.startswith('__member'):
+        elif column.startswith(MEMBER_PREFIX):
             if isinstance(value, basestring):
                 value = loads(value) 
             members.append(value)
@@ -749,7 +752,6 @@ def _image_update(context, values, image_id, purge_props=False):
     if image_id:
         image = _image_get(context, image_id)
 
-        image_cf.remove(image_id)
         # Perform authorization check
         _check_mutate_authorization(context, image)
     else:
@@ -765,7 +767,7 @@ def _image_update(context, values, image_id, purge_props=False):
         values['is_public'] = bool(values.get('is_public', False))
         values['protected'] = bool(values.get('protected', False))
 
-        image = create(Models.Image)
+        image = create_image()
 
     # Need to canonicalize ownership
     if 'owner' in values and not values['owner']:
@@ -785,18 +787,48 @@ def _image_update(context, values, image_id, purge_props=False):
     image = merge_dict(image, values)
     values = _validate_image(image)
 
-    _set_properties_for_image(context, image, properties, purge_props)
+    # Batch operations on inverted indices and images
+    batch = Mutator(pool)
 
-    if location_data is not None:
-        _image_locations_set(image, location_data)
+    # Set up properties
+    orig_properties = {}
+    for column, value in image.iteritems():
+        if column.startswith(PROPERTY_PREFIX):
+            prop = loads(value)
+            orig_properties[prop['name']] = prop
+
+    for name, value in properties.iteritems():
+        prop_values = create_image_property(**{
+            'image_id': image['id'],
+            'name': name,
+            'value': value
+        })
+
+        if name in orig_properties:
+            prop = orig_properties[name]
+            _image_property_update(context, prop, prop_values, batch=batch)
+        else:
+            image_property_create(context, prop_values, batch=batch)
+
+        image[prop_values['id']] = prop_values
+
+    prop_names_to_delete = []
+
+    if purge_props:
+        for key in orig_properties.keys():
+            if key not in properties:
+                prop = orig_properties[key]
+                prop_names_to_delete.append(prop.name)
+
+    _image_property_delete(context, prop_names_to_delete,
+                           image['id'], batch=batch)
 
     # TODO: No exception will be raised if the given key
     # already exists.  Do we need to worry about overriding
     # stuff anyway?
-    image_cf.insert(image['id'], marshal_image(image))
-
-    print 'image is: '
-    print image
+    batch.insert(image_cf, image['id'], marshal_image(image))
+    
+    batch.send
 
     return _transform_image(image)
 
@@ -815,7 +847,7 @@ def _image_locations_set(image, locations):
     # at once.  We might want to optimize this.
 
     for location in locations:
-        new_location = create(Models.ImageLocation,
+        new_location = create_image_location(
                               image_id=image['id'],
                               url=location['url'],
                               metadata=location['metadata'])
@@ -855,47 +887,58 @@ def _set_properties_for_image(context, image, properties,
                                       image.id)
 
 
-def image_property_create(context, values):
+def image_property_create(context, values, batch=None):
     """Create an ImageProperty object"""
-    prop = create(Models.ImageProperty)
-    prop = _image_property_update(context, prop, values)
+    prop = create_image_property()
+    prop = _image_property_update(context, prop, values,
+                                  batch=batch)
     return prop
 
 
-def _image_property_update(context, prop, values):
+def _image_property_update(context, prop, values, batch=None):
     """
     Used internally by image_property_create and image_property_update
     """
     drop_protected_attrs(values)
 
+    delete_inverted_indices(prop, Models.ImageProperty)
     prop = merge_dict(prop, values)
     save_inverted_indices(prop, Models.ImageProperty)
-    uuid = PROPERTY_PREFIX + uuidutils.generate_uuid()
 
-    image_cf.insert(prop['image_id'], {uuid: (dumps(prop))})
+    if batch:
+        batch.insert(image_cf, prop['image_id'], {prop['id']: dumps(prop)})
+    else:
+        image_cf.insert(prop['image_id'], {prop['id']: dumps(prop)})
 
     return prop
 
 
-def image_property_delete(context, prop_name, image_id, session=None):
+def image_property_delete(context, prop_name, image_id):
     """
     Used internally by image_property_create and image_property_update
     """
+    _image_property_delete(context, [prop_name], image_id)
+
+def _image_property_delete(context, prop_names, image_id, batch=None):
     remove_columns = []
 
     image = image_cf.get(image_id)
     for column, value in image.iteritems():
         if column.startswith(PROPERTY_PREFIX):
             value = loads(value)  
-            if value['name'] == prop_name:
+            if value['name'] in prop_names:
+                delete_inverted_indices(value, Models.ImageProperty)
                 remove_columns.append(column)
 
-    image_cf.remove(image_cf, remove_columns)
+    if batch:
+        batch.remove(image_cf, image_id, remove_columns)
+    else:
+        image_cf.remove(image_id, remove_columns)
 
 
 def image_member_create(context, values, session=None):
     """Create an ImageMember object"""
-    memb = create(Models.ImageMember)
+    memb = create_image_member()
     memb = _image_member_update(context, memb, values)
     return memb
 
@@ -913,7 +956,7 @@ def _image_member_update(context, memb, values):
     values["deleted"] = False
     values.setdefault('can_share', False)
 
-    remove_inverted_indices(memb, Models.ImageMember)
+    delete_inverted_indices(memb, Models.ImageMember)
 
     memb = merge_dict(memb, values)
 
@@ -929,7 +972,7 @@ def _image_member_update(context, memb, values):
 def image_member_delete(context, memb_id, session=None):
     """Delete an ImageMember object"""
     member = _image_member_get(context, memb_id)
-    remove_inverted_indices(memb)
+    delete_inverted_indices(memb)
     image_cf.remove(memb['image_id'], [memb['id']])
 
 
@@ -960,23 +1003,25 @@ def image_member_find(context, image_id=None, member=None, status=None):
 def _image_member_find(context, image_id=None,
                        member=None, status=None):
 
-    if image.owner == context.owner:
-        image_is_owner = True
-    else:
-        image_is_owner = False
+    def construct_criteria_from_image(image):
+        if image.owner == context.owner:
+            image_is_owner = True
+        else:
+            image_is_owner = False
 
-    criteria = [Or(Identity(image_is_owner, EQ(True)),
-                   Attr('member', EQ(context.owner)))]
+        criteria = [Or(Identity(image_is_owner, EQ(True)),
+                       Attr('member', EQ(context.owner)))]
 
-    if member is not None:
-        criteria.append(Attr('member', EQ(member)))
+        if member is not None:
+            criteria.append(Attr('member', EQ(member)))
 
-    if status is not None:
-        criteria.append(Attr('status', EQ(status)))
+        if status is not None:
+            criteria.append(Attr('status', EQ(status)))
 
-    criteria = And(*criteria)
+        criteria = And(*criteria)
+        return criteria
 
-    def find_matching_members(image):
+    def find_matching_members(image, criteria):
         members = []
         for column, value in image.iteritems():
             if column.startswith(MEMBER_PREFIX):
@@ -988,8 +1033,12 @@ def _image_member_find(context, image_id=None,
 
     if image_id:
         image = image_cf.get(image_id)
+
+        criteria = construct_criteria_from_image(image)
     
-        return find_matching_members(image)
+        return find_matching_members(image, criteria)
+
+    # TODO
 
     else:
         image_ids = set()
