@@ -65,7 +65,7 @@ LOCATION_PREFIX = '__location_'
 PROPERTY_PREFIX = '__property_'
 TAG_PREFIX = '__tag_'
 MEMBER_PREFIX = '__member_'
-MARSHAL_PREFIX = '__'
+MARSHAL_PREFIX = '__marshal_'
 
 IMAGE_FIELDS = ['id', 'name', 'disk_format', 'container_format', 'size',
                 'status', 'is_public', 'checksum', 'min_disk', 'min_ram',
@@ -610,12 +610,21 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                       an admin the equivalent set of images which it would see
                       if it were a regular user
     """
-    def get_row_key(model, k, v):
-        """Get a row key to use with inverted indices"""
-        prefix = get_prefix(model)
-        return prefix + '.' + str(k) + '=' + str(v)
 
     filters = filters or {}
+    limit = limit or 99999999
+
+    print 'the arguments are:'
+    print context.is_admin
+    print context.owner
+    print filters
+    print marker
+    print limit
+    print sort_key
+    print sort_dir
+    print member_status
+    print is_public
+    print admin_as_user
 
     # We are querying for images that satisfy one of the following conditions:
     # 1. Anyone can see it (is_public = True)
@@ -627,13 +636,10 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     # all images whose member is context.owner, then we use client-side
     # filters.
 
-    image_filters = []
-
     public_image_filters = []
     own_image_filters = []
     shared_image_ids = []
 
-    inverted_indices_rows = []
     client_side_filters = []
 
     if (not context.is_admin) or admin_as_user == True:
@@ -725,6 +731,15 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                                                    Attr('value',
                                                         EQ(v))))))
 
+    print 'wakakaka'
+    print public_image_filters
+    print own_image_filters
+    print shared_image_ids
+    print client_side_filters
+    print common_filters
+
+    client_side_filters = And(*client_side_filters)
+
     images = []
 
     # To avoid repeated images
@@ -733,7 +748,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     if public_image_filters != []:
         public_image_filters.extend(common_filters)
         res = image_cf.get_indexed_slices(create_index_clause(
-            public_image_filters, count=9999999))
+            public_image_filters, count=limit))
         for key, image in res:
             if key not in key_set:
                 images.append(image)
@@ -742,7 +757,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     if own_image_filters != []:
         own_image_filters.extend(common_filters)
         res = image_cf.get_indexed_slices(create_index_clause(
-            own_image_filters, count=9999999))
+            own_image_filters, count=limit))
         for key, image in res:
             if key not in key_set:
                 images.append(image)
@@ -753,7 +768,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
             temp_filters = [create_index_expression('id', image_id, index.EQ)]
             temp_filters.extend(common_filters)
             res = image_cf.get_indexed_slices(create_index_clause(
-                temp_filters, count=9999999))
+                temp_filters, count=limit))
             for key, image in res:
                 if key not in key_set:
                     images.append(image)
@@ -761,6 +776,8 @@ def image_get_all(context, filters=None, marker=None, limit=None,
 
     images = [_transform_image(unmarshal_image(image)) for image in images]
     images = filter(lambda x: client_side_filters.match(x), images)
+
+    print images
 
     # TODO: pagination
 
@@ -864,10 +881,12 @@ def _image_update(context, values, image_id, purge_props=False):
     orig_properties = {}
     for column, value in image.iteritems():
         if column.startswith(PROPERTY_PREFIX):
+            LOG.info('BP1')
             prop = loads(value)
             orig_properties[prop['name']] = prop
 
     for name, value in properties.iteritems():
+        LOG.info('BP2')
         prop_values = create_image_property(**{
             'image_id': image['id'],
             'name': name,
@@ -875,9 +894,11 @@ def _image_update(context, values, image_id, purge_props=False):
         })
 
         if name in orig_properties:
+            LOG.info('BP3')
             prop = orig_properties[name]
             _image_property_update(context, prop, prop_values, batch=batch)
         else:
+            LOG.info('BP4')
             image_property_create(context, prop_values, batch=batch)
 
         image[prop_values['id']] = prop_values
@@ -902,6 +923,14 @@ def _image_update(context, values, image_id, purge_props=False):
     batch.insert(image_cf, image['id'], marshal_image(image))
 
     batch.send()
+
+    LOG.info('after')
+    LOG.info(image)
+    LOG.info(marshal_image(image))
+
+    v = image_cf.get(image['id'])
+    LOG.info(v)
+    LOG.info(unmarshal_image(v))
 
     return _transform_image(image)
 
