@@ -50,7 +50,7 @@ from glance.db.cassandra.lib import ImageRepo, \
                                     Models, \
                                     merge_dict, drop_protected_attrs,\
                                     sort_dicts
-from glance.db.cassandra.spec import EQ, Attr, Any, And, Or, NEQ, Identity
+from glance.db.cassandra.spec import EQ, Attr, Any, And, Or, NEQ, Identity, inspect_attr
 
 pool = None
 image_cf = None
@@ -378,9 +378,6 @@ def _transform_image(image):
     transformed_image['tags'] = tags
     transformed_image['members'] = members
 
-
-    print "transformed image: "
-    print transformed_image
     return transformed_image
 
 @trace
@@ -613,69 +610,96 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                       an admin the equivalent set of images which it would see
                       if it were a regular user
     """
+    def get_row_key(model, k, v):
+        """Get a row key to use with inverted indices"""
+        prefix = get_prefix(model)
+        return prefix + '.' + str(k) + '=' + str(v)
+
     filters = filters or {}
 
+    # We are querying for images that satisfy one of the following conditions:
+    # 1. Anyone can see it (is_public = True)
+    # 2. I own it (owner = context.owner)
+    # 3. Someone has shared it with me (ImageMember.member = context.owner)
+
+    # To query for the first two conditions, we ask Cassandra directly.
+    # To query for the last condition, we use inverted indices to query for
+    # all images whose member is context.owner, then we use client-side
+    # filters.
+
     image_filters = []
-    other_filters = []
+
+    public_image_filters = []
+    own_image_filters = []
+    shared_image_ids = []
+
+    inverted_indices_rows = []
+    client_side_filters = []
 
     if (not context.is_admin) or admin_as_user == True:
-        image_filters.append(create_index_expression('is_public', True, index.EQ))
-        other_filters.append(Attr('members.deleted', EQ(False)))
+        public_image_filters.append(create_index_expression('is_public', True, index.EQ))
 
         if context.owner is not None:
-            image_filters.append(create_index_expression('owner', context.owner, index.EQ))
-            other_filters.append(Attr('members.member',
-                                      EQ(context, context.owner)))
-            if member_status != 'all':
-                other_filters.append(Attr('members.status',
-                                          EQ(member_status)))
+            own_image_filters.append(create_index_expression('owner', context.owner, index.EQ))
 
-        other_filters = [And(*other_filters)]
+            shared_image_ids = set(query_inverted_indices(
+                Models.ImageMember, 'member', context.owner))
+
+            if member_status != 'all':
+                shared_image_ids = shared_image_ids.union(
+                    query_inverted_indices(Models.ImageMember, 'status', member_status))
+
+    common_filters = []
 
     if 'visibility' in filters:
         visibility = filters.pop('visibility')
         if visibility == 'public':
-            image_filters.append(create_index_expression('is_public', True, index.EQ))
+            common_filters.append(create_index_expression('is_public', True, index.EQ))
         elif visibility == 'private':
-            image_filters.append(create_index_expression('is_public', False, index.EQ))
+            common_filters.append(create_index_expression('is_public', False, index.EQ))
             if context.owner is not None and ((not context.is_admin)
                                               or admin_as_user == True):
-                image_filters.append('owner', context.owner, index.EQ)
+                common_filters.append('owner', context.owner, index.EQ)
         else:
-            other_filters.extend([Attr('members.member', EQ(context.owner)),
-                                  Attr('members.deleted', EQ(False))])
-            # TODO: exactly why are we doing this?
-            image_filters = []
+            shared_image_ids.union(query_inverted_indices(
+                Models.ImageMember, 'member', context.owner))
+            public_image_filters = []
+            own_image_filters = []
 
     if is_public is not None:
-        image_filters.append(create_index_expression('is_public', is_public, index.EQ))
+        common_filters.append(create_index_expression('is_public', is_public, index.EQ))
 
     if 'is_public' in filters:
-        other_filters.append(Attr('properties',
-                                  Any(And(Attr('name', EQ('is_public')),
-                                          Attr('value',
-                                               EQ(filters.pop('is_public'))),
-                                          Attr('deleted', EQ(False))))))
+        client_side_filters.append(Attr('properties',
+                                   Any(And(Attr('name', EQ('is_public')),
+                                           Attr('value',
+                                                EQ(filters.pop('is_public'))),
+                                           Attr('deleted', EQ(False))))))
 
     if 'checksum' in filters:
         checksum = filters.get('checksum')
-        image_filters.append(create_index_expression('checksum', checksum, index.EQ))
+        common_filters.append(create_index_expression('checksum', checksum, index.EQ))
 
     if 'changes-since' in filters:
         # normalize timestamp to UTC, as sqlalchemy doesn't appear to
         # respect timezone offsets
         changes_since = timeutils.normalize_time(filters.pop('changes-since'))
-        image_filters.append(create_index_expression('updated_at', changes_since, index.GT))
+        common_filters.append(create_index_expression('updated_at', changes_since, index.GT))
 
-    other_filters.append(Attr('status', NEQ('killed')))
+
+    if 'deleted' in filters:
+        deleted_filter = filters.pop('deleted')
+        if not deleted_filter:
+            # Cassandra doesn't support NEQ, so we handle it on the client side
+            client_side_filters.append(Attr('status', NEQ('killed')))
 
 
     for k, v in filters.pop('properties', {}).iteritems():
-        other_filters.append(Attr('properties',
-                                  Any(And(Attr('name', EQ(k)),
-                                          Attr('value',
-                                               EQ(v)),
-                                          Attr('deleted', EQ(False))))))
+        client_side_filters.append(Attr('properties',
+                                   Any(And(Attr('name', EQ(k)),
+                                           Attr('value',
+                                                EQ(v)),
+                                           Attr('deleted', EQ(False))))))
 
     for k, v in filters.iteritems():
         if v is not None:
@@ -690,26 +714,57 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                     raise exception.InvalidFilterRangeValue(msg)
 
             if k.endswith('_min'):
-                image_filters.append(create_index_expression(key, v, index.GTE))
+                common_filters.append(create_index_expression(key, v, index.GTE))
             elif k.endswith('_max'):
-                image_filters.append(create_index_expression(key, v, index.LTE))
+                common_filters.append(create_index_expression(key, v, index.LTE))
             elif key in IMAGE_FIELDS:
-                image_filters.append(create_index_expression(key, v, index.EQ))
+                common_filters.append(create_index_expression(key, v, index.EQ))
             else:
-                other_filters.append(Attr('properties',
-                                          Any(And(Attr('name', EQ(key)),
-                                                  Attr('value',
-                                                       EQ(v))))))
+                client_side_filters.append(Attr('properties',
+                                           Any(And(Attr('name', EQ(key)),
+                                                   Attr('value',
+                                                        EQ(v))))))
 
-    # TODO: Setting count to a large number to get all images; not sure if there is a more
-    # elegant way
-    images = image_cf.get_indexed_slices(create_index_clause(image_filters, count=99999999))
-    other_filters = And(*other_filters)
-    images = filter(lambda x: other_filters.match(x), images)
+    images = []
+
+    # To avoid repeated images
+    key_set = set()
+
+    if public_image_filters != []:
+        public_image_filters.extend(common_filters)
+        res = image_cf.get_indexed_slices(create_index_clause(
+            public_image_filters, count=9999999))
+        for key, image in res:
+            if key not in key_set:
+                images.append(image)
+                key_set.add(key)
+
+    if own_image_filters != []:
+        own_image_filters.extend(common_filters)
+        res = image_cf.get_indexed_slices(create_index_clause(
+            own_image_filters, count=9999999))
+        for key, image in res:
+            if key not in key_set:
+                images.append(image)
+                key_set.add(key)
+
+    if shared_image_ids != []:
+        for image_id in shared_image_ids:
+            temp_filters = [create_index_expression('id', image_id, index.EQ)]
+            temp_filters.extend(common_filters)
+            res = image_cf.get_indexed_slices(create_index_clause(
+                temp_filters, count=9999999))
+            for key, image in res:
+                if key not in key_set:
+                    images.append(image)
+                    key_set.add(key)
+
+    images = [_transform_image(unmarshal_image(image)) for image in images]
+    images = filter(lambda x: client_side_filters.match(x), images)
 
     # TODO: pagination
 
-    return [_transform_image(image) for image in images]
+    return images
 
 @trace
 def _validate_image(values):
