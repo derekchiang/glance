@@ -855,38 +855,6 @@ def _image_locations_set(image, locations):
         image[new_location['id']] = new_location
 
 
-def _set_properties_for_image(context, image, properties,
-                              purge_props=False):
-    """
-    Create or update a set of image_properties for a given image
-
-    :param context: Request context
-    :param image: An Image dictionary
-    :param properties: A dict of properties to set
-    :param session: A SQLAlchemy session to use (if present)
-    """
-    orig_properties = {}
-    for prop in (image.get('properties') or []):
-        orig_properties[prop['name']] = prop
-
-    for name, value in properties.iteritems():
-        prop_values = {'image_id': image['id'],
-                       'name': name,
-                       'value': value}
-        if name in orig_properties:
-            prop = orig_properties[name]
-            _image_property_update(context, prop, prop_values)
-        else:
-            image_property_create(context, prop_values)
-
-    if purge_props:
-        for key in orig_properties.keys():
-            if key not in properties:
-                prop = orig_properties[key]
-                image_property_delete(context, prop.name,
-                                      image.id)
-
-
 def image_property_create(context, values, batch=None):
     """Create an ImageProperty object"""
     prop = create_image_property()
