@@ -260,9 +260,7 @@ def unmarshal_image(image):
     members = []
 
     for column, value in image.iteritems():
-        if isinstance(value, basestring) and value.startswith(MARSHAL_PREFIX):
-            output[column] = loads(value)
-        elif column.startswith(LOCATION_PREFIX):
+        if column.startswith(LOCATION_PREFIX):
             # If it's string, it needs to be unmarshalled
             if isinstance(value, basestring):
                 value = loads(value) 
@@ -279,6 +277,8 @@ def unmarshal_image(image):
             if isinstance(value, basestring):
                 value = loads(value) 
             members.append(value)
+        elif isinstance(value, basestring) and value.startswith(MARSHAL_PREFIX):
+            output[column] = loads(value)
         else:
             output[column] = value
 
@@ -837,43 +837,28 @@ def _image_update(context, values, image_id, purge_props=False):
     # Batch operations on inverted indices and images
     batch = Mutator(pool)
 
-    # Set up properties
-    orig_properties = {}
-    for column, value in image.iteritems():
-        if column.startswith(PROPERTY_PREFIX):
-            LOG.info('BP1')
-            prop = loads(value)
-            orig_properties[prop['name']] = prop
+    orig_properties = unmarshal_image(image)['properties']
+    orig_properties_names = filter(lambda x: x['name'], orig_properties)
+    new_properties_names = properties.keys()
 
-    for name, value in properties.iteritems():
-        LOG.info('BP2')
+    if purge_props:
+        prop_names_to_delete = set(orig_properties_names).difference(
+                                set(new_properties_names))
+        _image_property_delete(context, prop_names_to_delete,
+                           image['id'], batch=batch)
+
+    for name in properties:
         prop_values = create_image_property(**{
             'image_id': image['id'],
             'name': name,
-            'value': value
+            'value': properties[name]
         })
 
-        if name in orig_properties:
-            LOG.info('BP3')
-            prop = orig_properties[name]
-            _image_property_update(context, prop, prop_values, batch=batch)
-        else:
-            LOG.info('BP4')
-            LOG.info(prop_values)
-            image_property_create(context, prop_values, batch=batch)
+        if name in orig_properties_names:
+            _image_property_delete(context, [name], image['id'], batch)
 
+        image_property_create(context, prop_values, batch=batch)
         image[prop_values['id']] = prop_values
-
-    prop_names_to_delete = []
-
-    if purge_props:
-        for key in orig_properties.keys():
-            if key not in properties:
-                prop = orig_properties[key]
-                prop_names_to_delete.append(prop.name)
-
-    _image_property_delete(context, prop_names_to_delete,
-                           image['id'], batch=batch)
 
     if location_data is not None:
         _image_locations_set(image, location_data, batch)
