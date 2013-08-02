@@ -290,6 +290,40 @@ def unmarshal_image(image):
     return output
 
 
+def sort_dicts(dicts, orders):
+    """Sort a list of dictionaries"""
+    def compare(a, b):
+        for field, dir in orders:
+            if dir == 'asc':
+                if a[field] > b[field]:
+                    return 1
+                elif a[field] < b[field]:
+                    return -1
+                else:
+                    continue
+            elif dir == 'des':
+                if a[field] < b[field]:
+                    return 1
+                elif a[field] > b[field]:
+                    return -1
+                else:
+                    continue
+        return 0
+    # Some ordering must be given
+    assert len(orders) > 0
+
+    # Using insertion sort for simplicity
+    out = []
+    for d in dicts:
+        i = len(out) - 1
+        while i >= 0 and compare(out[i], d) > 0:
+            i = i - 1
+        out.insert(i+1, d)
+
+    return out
+
+
+
 def _check_mutate_authorization(context, image):
     if not is_image_mutable(context, image):
         LOG.info(_("Attempted to modify image user did not own."))
@@ -1138,7 +1172,7 @@ def _image_tag_delete(context, image_id, values):
     batch = Mutator(pool)
 
     columns_to_remove = []
-    
+
     for value in values:
         tags = unmarshal_image(image.cf.get(image_id))['tags']
         tags = filter(lambda x: x['value'] == value, tags)
