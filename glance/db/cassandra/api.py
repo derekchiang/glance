@@ -904,6 +904,10 @@ def _image_update(context, values, image_id, purge_props=False):
     LOG.info(marshal_image(image))
     batch.insert(image_cf, image['id'], marshal_image(image))
 
+    print 'batch is'
+    print batch
+    print batch.__dict__
+
     batch.send()
 
     LOG.info(image_cf.get(image['id']))
@@ -1154,7 +1158,7 @@ def _image_tag_create(context, image_id, values):
 
     tags = {}
 
-    for value in values
+    for value in values:
         tag = create_image_tag(image_id=image_id, value=value)
         save_inverted_indices(tag, TAG_PREFIX, batch)
         tags[tag['id']] = dumps(tag)
