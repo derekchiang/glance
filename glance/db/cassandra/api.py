@@ -1097,50 +1097,65 @@ def _can_show_deleted(context):
 
 
 def image_tag_set_all(context, image_id, tags):
-    session = _get_session()
-    existing_tags = set(image_tag_get_all(context, image_id, session))
+    existing_tags = set(image_tag_get_all(context, image_id))
     tags = set(tags)
 
     tags_to_create = tags - existing_tags
     #NOTE(bcwaldon): we call 'reversed' here to ensure the ImageTag.id fields
     # will be populated in the order required to reflect the correct ordering
     # on a subsequent call to image_tag_get_all
-    for tag in reversed(list(tags_to_create)):
-        image_tag_create(context, image_id, tag, session)
-
-    tags_to_delete = existing_tags - tags
-    for tag in tags_to_delete:
-        image_tag_delete(context, image_id, tag, session)
+    _image_tag_create(context, image_id, reversed(list(tags_to_create)))
+    _image_tag_delete(context, image_id, tags_to_delete)
 
 
-def image_tag_create(context, image_id, value, session=None):
+def image_tag_create(context, image_id, value):
     """Create an image tag."""
-    repo.reset()
-    tag = repo.create(Models.ImageTag, image_id=image_id, value=value)
-    repo.save(tag, Models.ImageTag)
-    return tag['value']
+    _image_tag_create(context, image_id, [value])
 
+    return value
 
-def image_tag_delete(context, image_id, value, session=None):
+def _image_tag_create(context, image_id, values):
+    """Create several tags at once"""
+    batch = Mutator(pool)
+
+    tags = {}
+
+    for value in values
+        tag = create_image_tag(image_id=image_id, value=value)
+        save_inverted_indices(tag, TAG_PREFIX, batch)
+        tags[tag['id']] = dumps(tag)
+
+    batch.insert(image_cf, image_id, tags)
+
+    batch.send()
+
+def image_tag_delete(context, image_id, value):
     """Delete an image tag."""
-    repo.reset()
+    _image_tag_delete(context, image_id, [value])
 
-    image = repo.load('tags').get(key=image_id)
-    tags = filter(lambda x: x['value'] == value and
-                            x['deleted'] == False, image['tags'])
+def _image_tag_delete(context, image_id, values):
+    """Delete multiple image tags."""
+    batch = Mutator(pool)
 
-    if len(tags) == 0:
-        raise exception.NotFound()
-    else:
-        repo.soft_delete(tags[0])
+    columns_to_remove = []
+    
+    for value in values:
+        tags = unmarshal_image(image.cf.get(image_id))['tags']
+        tags = filter(lambda x: x['value'] == value, tags)
+
+        if len(tags) == 0:
+            raise exception.NotFound()
+        else:
+            for tag in tags:
+                delete_inverted_indices(tag, TAG_PREFIX, batch)
+                columns_to_remove.append(tag['id'])
+            
+    batch.remove(image_cf, image_id, columns_to_remove)
+    batch.send()
 
 def image_tag_get_all(context, image_id):
     """Get a list of tags for a specific image."""
-    repo.reset()
-
-    image = repo.load('tags').get(key=image_id)
-    tags = filter(lambda x: x['deleted'] == False, image['tags'])
-
+    tags = unmarshal_image(image.cf.get(image_id))['tags']
     tags = sort_dicts(tags, [('created_at', 'asc')])
 
     return [tag['value'] for tag in tags]
