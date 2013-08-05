@@ -151,6 +151,12 @@ class DriverTests(object):
                           self.db_api.image_create,
                           self.context, {'id': UUID1, 'status': 'queued'})
 
+
+    @staticmethod
+    def _compare_lists(listA, listB):
+        return [a for a in listA if a not in listB] == []
+
+
     def test_image_create_with_locations(self):
         locations = [{'url': 'a', 'metadata': {}},
                      {'url': 'b', 'metadata': {}}]
@@ -160,7 +166,7 @@ class DriverTests(object):
         image = self.db_api.image_create(self.context, fixture)
         actual = [{'url': l['url'], 'metadata': l['metadata']}
                   for l in image['locations']]
-        self.assertEqual(locations, actual)
+        self.assertTrue(self._compare_lists(locations, actual))
 
     def test_image_create_with_location_data(self):
         location_data = [{'url': 'a', 'metadata': {'key': 'value'}},
@@ -169,7 +175,7 @@ class DriverTests(object):
         image = self.db_api.image_create(self.context, fixture)
         actual = [{'url': l['url'], 'metadata': l['metadata']}
                   for l in image['locations']]
-        self.assertEqual(location_data, actual)
+        self.assertTrue(self._compare_lists(location_data, actual))
 
     def test_image_create_properties(self):
         fixture = {'status': 'queued', 'properties': {'ping': 'pong'}}
