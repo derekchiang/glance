@@ -311,6 +311,9 @@ def image_get(context, image_id, session=None, force_show_deleted=False):
     image = _image_get(context, image_id, session=session,
                        force_show_deleted=force_show_deleted)
     image = _normalize_locations(image.to_dict())
+    print 'finally!'
+    print type(image)
+    print image
     return image
 
 

@@ -61,7 +61,10 @@ def register_models():
 
         # Create indices on columns
         sys.create_index(KEYSPACE_NAME, 'Images', 'id', 'UTF8Type')
-        sys.create_index(KEYSPACE_NAME, 'Images', 'is_public', 'BooleanType')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'is_public', 'UTF8Type')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'owner', 'UTF8Type')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'name', 'UTF8Type')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'checksum', 'UTF8Type')
 
         sys.create_column_family(KEYSPACE_NAME, 'InvertedIndices')
 

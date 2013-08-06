@@ -164,7 +164,10 @@ def delete_inverted_indices(obj, prefix, batch):
 def query_inverted_indices(prefix, key, value):
     row_key = prefix + '.' + str(key) + '=' + str(value)
 
-    return inverted_indices_cf.get(row_key)
+    try:
+        return inverted_indices_cf.get(row_key)
+    except NotFoundException:
+        return []
 
 # TODO: Some registry APIs make use of the `deleted` attribute,
 # so I'm still creating this attribute for backward compatibility,
@@ -538,62 +541,8 @@ def _paginate_query(query, model, limit, sort_keys, marker=None,
     assert(len(sort_dirs) == len(sort_keys))
 
     # Add sorting
-    for current_sort_key, current_sort_dir in zip(sort_keys, sort_dirs):
-        sort_dir_func = {
-            'asc': sqlalchemy.asc,
-            'desc': sqlalchemy.desc,
-        }[current_sort_dir]
-
-        try:
-            sort_key_attr = getattr(model, current_sort_key)
-        except AttributeError:
-            raise exception.InvalidSortKey()
-        query = query.order_by(sort_dir_func(sort_key_attr))
-
-    default = ''  # Default to an empty string if NULL
-
-    # Add pagination
     if marker is not None:
-        marker_values = []
-        for sort_key in sort_keys:
-            v = getattr(marker, sort_key)
-            if v is None:
-                v = default
-            marker_values.append(v)
-
-        # Build up an array of sort criteria as in the docstring
-        criteria_list = []
-        for i in xrange(0, len(sort_keys)):
-            crit_attrs = []
-            for j in xrange(0, i):
-                model_attr = getattr(model, sort_keys[j])
-                attr = sa_sql.expression.case([(model_attr != None,
-                                              model_attr), ],
-                                              else_=default)
-                crit_attrs.append((attr == marker_values[j]))
-
-            model_attr = getattr(model, sort_keys[i])
-            attr = sa_sql.expression.case([(model_attr != None,
-                                          model_attr), ],
-                                          else_=default)
-            if sort_dirs[i] == 'desc':
-                crit_attrs.append((attr < marker_values[i]))
-            elif sort_dirs[i] == 'asc':
-                crit_attrs.append((attr > marker_values[i]))
-            else:
-                raise ValueError(_("Unknown sort direction, "
-                                   "must be 'desc' or 'asc'"))
-
-            criteria = sa_sql.and_(*crit_attrs)
-            criteria_list.append(criteria)
-
-        f = sa_sql.or_(*criteria_list)
-        query = query.filter(f)
-
-    if limit is not None:
-        query = query.limit(limit)
-
-    return query
+        pass
 
 @trace
 def image_get_all(context, filters=None, marker=None, limit=None,
@@ -620,19 +569,11 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     """
 
     filters = filters or {}
-    limit = limit or 99999999
 
-    print 'the arguments are:'
-    print context.is_admin
-    print context.owner
-    print filters
-    print marker
-    print limit
-    print sort_key
-    print sort_dir
-    print member_status
-    print is_public
-    print admin_as_user
+    if limit == 0:
+        return []
+    else:
+        limit = limit or 99999999
 
     # We are querying for images that satisfy one of the following conditions:
     # 1. Anyone can see it (is_public = True)
@@ -651,7 +592,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     client_side_filters = []
 
     if (not context.is_admin) or admin_as_user == True:
-        public_image_filters.append(create_index_expression('is_public', True, index.EQ))
+        public_image_filters.append(create_index_expression('is_public', dumps(True), index.EQ))
 
         if context.owner is not None:
             own_image_filters.append(create_index_expression('owner', context.owner, index.EQ))
@@ -668,9 +609,9 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     if 'visibility' in filters:
         visibility = filters.pop('visibility')
         if visibility == 'public':
-            common_filters.append(create_index_expression('is_public', True, index.EQ))
+            common_filters.append(create_index_expression('is_public', dumps(True), index.EQ))
         elif visibility == 'private':
-            common_filters.append(create_index_expression('is_public', False, index.EQ))
+            common_filters.append(create_index_expression('is_public', dumps(False), index.EQ))
             if context.owner is not None and ((not context.is_admin)
                                               or admin_as_user == True):
                 common_filters.append('owner', context.owner, index.EQ)
@@ -681,7 +622,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
             own_image_filters = []
 
     if is_public is not None:
-        common_filters.append(create_index_expression('is_public', is_public, index.EQ))
+        common_filters.append(create_index_expression('is_public', dumps(is_public), index.EQ))
 
     if 'is_public' in filters:
         client_side_filters.append(Attr('properties',
@@ -739,13 +680,6 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                                                    Attr('value',
                                                         EQ(v))))))
 
-    print 'wakakaka'
-    print public_image_filters
-    print own_image_filters
-    print shared_image_ids
-    print client_side_filters
-    print common_filters
-
     client_side_filters = And(*client_side_filters)
 
     images = []
@@ -755,6 +689,8 @@ def image_get_all(context, filters=None, marker=None, limit=None,
 
     if public_image_filters != []:
         public_image_filters.extend(common_filters)
+        print 'public_image_filters: '
+        print public_image_filters
         res = image_cf.get_indexed_slices(create_index_clause(
             public_image_filters, count=limit))
         for key, image in res:
@@ -767,6 +703,9 @@ def image_get_all(context, filters=None, marker=None, limit=None,
         res = image_cf.get_indexed_slices(create_index_clause(
             own_image_filters, count=limit))
         for key, image in res:
+            print 'key is:'
+            print key
+            print image
             if key not in key_set:
                 images.append(image)
                 key_set.add(key)
@@ -775,6 +714,8 @@ def image_get_all(context, filters=None, marker=None, limit=None,
         for image_id in shared_image_ids:
             temp_filters = [create_index_expression('id', image_id, index.EQ)]
             temp_filters.extend(common_filters)
+            print 'temp_filters: '
+            print temp_filters
             res = image_cf.get_indexed_slices(create_index_clause(
                 temp_filters, count=limit))
             for key, image in res:
@@ -788,6 +729,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     print images
 
     # TODO: pagination
+
 
     return images
 
@@ -996,7 +938,9 @@ def image_property_delete(context, prop_name, image_id):
     """
     Used internally by image_property_create and image_property_update
     """
-    _image_property_delete(context, [prop_name], image_id)
+    batch = Mutator(pool)
+    _image_property_delete(context, [prop_name], image_id, batch)
+    batch.send()
 
 def _image_property_delete(context, prop_names, image_id, batch=None):
     remove_columns = []
