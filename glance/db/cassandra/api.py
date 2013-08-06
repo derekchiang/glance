@@ -312,7 +312,7 @@ def sort_dicts(dicts, orders):
                     return -1
                 else:
                     continue
-            elif dir == 'des':
+            elif dir == 'desc':
                 if a[field] < b[field]:
                     return 1
                 elif a[field] > b[field]:
@@ -410,6 +410,8 @@ def image_get(context, image_id, session=None, force_show_deleted=False):
         LOG.debug(msg)
         raise exception.Forbidden(msg)
 
+    print 'image is: '
+    print image
     return image
 
 def is_image_mutable(context, image):
@@ -639,7 +641,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
         # normalize timestamp to UTC, as sqlalchemy doesn't appear to
         # respect timezone offsets
         changes_since = timeutils.normalize_time(filters.pop('changes-since'))
-        common_filters.append(create_index_expression('updated_at', changes_since, index.GT))
+        common_filters.append(create_index_expression('updated_at', dumps(changes_since), index.GT))
 
 
     if 'deleted' in filters:
@@ -659,6 +661,8 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     for k, v in filters.iteritems():
         if v is not None:
             key = k
+            if not isinstance(v, basestring):
+                v = dumps(v)
             if k.endswith('_min') or k.endswith('_max'):
                 key = key[0:-4]
                 try:
@@ -703,9 +707,6 @@ def image_get_all(context, filters=None, marker=None, limit=None,
         res = image_cf.get_indexed_slices(create_index_clause(
             own_image_filters, count=limit))
         for key, image in res:
-            print 'key is:'
-            print key
-            print image
             if key not in key_set:
                 images.append(image)
                 key_set.add(key)
@@ -714,8 +715,6 @@ def image_get_all(context, filters=None, marker=None, limit=None,
         for image_id in shared_image_ids:
             temp_filters = [create_index_expression('id', image_id, index.EQ)]
             temp_filters.extend(common_filters)
-            print 'temp_filters: '
-            print temp_filters
             res = image_cf.get_indexed_slices(create_index_clause(
                 temp_filters, count=limit))
             for key, image in res:
@@ -726,6 +725,9 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     images = [unmarshal_image(image) for image in images]
     images = filter(lambda x: client_side_filters.match(x), images)
 
+    images = sort_dicts(images, [(sort_key, sort_dir)])
+
+    print 'images are: '
     print images
 
     # TODO: pagination
@@ -1124,8 +1126,6 @@ def _image_tag_create(context, image_id, values):
         save_inverted_indices(tag, TAG_PREFIX, batch)
         tags[tag['id']] = dumps(tag)
 
-    print 'tags are:'
-    print tags
     batch.insert(image_cf, image_id, tags)
 
     batch.send()
@@ -1157,7 +1157,6 @@ def _image_tag_delete(context, image_id, values):
 def image_tag_get_all(context, image_id):
     """Get a list of tags for a specific image."""
     image = unmarshal_image(image_cf.get(image_id))
-    print image
     tags = unmarshal_image(image_cf.get(image_id)).get('tags') or []
     tags = sort_dicts(tags, [('created_at', 'asc')])
 
