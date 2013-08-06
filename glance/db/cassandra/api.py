@@ -572,6 +572,12 @@ def image_get_all(context, filters=None, marker=None, limit=None,
 
     filters = filters or {}
 
+    print 'arguments: '
+    print filters
+    print member_status
+    print is_public
+    print admin_as_user
+
     if limit == 0:
         return []
     else:
@@ -603,7 +609,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                 MEMBER_PREFIX, 'member', context.owner))
 
             if member_status != 'all':
-                shared_image_ids = shared_image_ids.union(
+                shared_image_ids = shared_image_ids.intersection(
                     query_inverted_indices(MEMBER_PREFIX, 'status', member_status))
 
     common_filters = []
