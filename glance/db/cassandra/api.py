@@ -151,6 +151,7 @@ def save_inverted_indices(obj, prefix, batch):
 
 
 def delete_inverted_indices(obj, prefix, batch):
+    print obj
     image_id = obj.get('image_id')
 
     # When a property is just getting created, it has no image_id
@@ -214,7 +215,7 @@ def create_image_location(**kwargs):
         'created_at': timeutils.utcnow(),
         'updated_at': timeutils.utcnow(),
         'id': LOCATION_PREFIX + uuidutils.generate_uuid(),
-        'meta_data': {},
+        'metadata': {},
         'deleted_at': None,
         'deleted': False
     }, **kwargs)
@@ -385,14 +386,6 @@ def image_destroy(context, image_id):
 
     image_cf.remove(image_id)
 
-    return image
-
-@trace
-def _normalize_locations(image):
-    undeleted_locations = filter(lambda x: not x['deleted'], image['locations'])
-    image['locations'] = [{'url': loc['value'],
-                           'metadata': loc['meta_data']}
-                          for loc in undeleted_locations]
     return image
 
 @trace
@@ -800,10 +793,6 @@ def _image_update(context, values, image_id, purge_props=False):
 
     if image_id:
         image = image_cf.get(image_id)
-
-        print 'the image I just got is: '
-        print image
-
         # Perform authorization check
         _check_mutate_authorization(context, image)
     else:
@@ -856,12 +845,13 @@ def _image_update(context, values, image_id, purge_props=False):
     batch = Mutator(pool)
 
     orig_properties = unmarshal_image(image)['properties']
-    orig_properties_names = filter(lambda x: x['name'], orig_properties)
+    orig_properties_names = [x['name'] for x in orig_properties]
     new_properties_names = properties.keys()
 
     if purge_props:
-        prop_names_to_delete = set(orig_properties_names).difference(
-                                set(new_properties_names))
+        print orig_properties_names
+        print new_properties_names
+        prop_names_to_delete = set(orig_properties_names) - set(new_properties_names)
         _image_property_delete(context, prop_names_to_delete,
                            image['id'], batch=batch)
 
@@ -888,10 +878,18 @@ def _image_update(context, values, image_id, purge_props=False):
 
     batch.send()
 
-    image = unmarshal_image(image)
+    image = _normalize_locations(unmarshal_image(image))
     # TODO: Deleting tags for now since the tests are not expecting
     # tags being returned.  Discuss later.
+
     del image['tags']
+    return image
+
+def _normalize_locations(image):
+    # For consumption outside of this module
+    image['locations'] = [{'url': loc['url'],
+                           'metadata': loc['metadata']}
+                          for loc in image['locations']]
     return image
 
 @trace
@@ -901,7 +899,7 @@ def _image_locations_set(image, locations, batch=None):
     remove_columns = []
     for column, value in image.iteritems():
         if column.startswith(LOCATION_PREFIX):
-            delete_inverted_indices(value, LOCATION_PREFIX, batch)
+            delete_inverted_indices(loads(value), LOCATION_PREFIX, batch)
             # Not directly deleting because the size of image can't
             # change during the iteration
             remove_columns.append(column)
