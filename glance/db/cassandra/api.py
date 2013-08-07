@@ -846,6 +846,7 @@ def _image_update(context, values, image_id, purge_props=False):
     # on new records, only on existing records, which is, well,
     # idiotic.
     image = dict(image, **values)
+    image['updated_at'] = timeutils.utcnow()
     values = _validate_image(image)
 
     # Batch operations on inverted indices and images
@@ -938,6 +939,7 @@ def _image_property_update(context, prop, values, batch=None):
 
     delete_inverted_indices(prop, PROPERTY_PREFIX, batch)
     prop = dict(prop, **values)
+    prop['updated_at'] = timeutils.utcnow()
     save_inverted_indices(prop, PROPERTY_PREFIX, batch)
 
     batch.insert(image_cf, prop['image_id'], {prop['id']: dumps(prop)})
@@ -988,7 +990,7 @@ def image_member_update(context, memb_id, values):
 
     memb = _image_member_get(context, memb_id)
     if memb:
-        return _image_member_update(context, memb, values, session)
+        return _image_member_update(context, memb, values)
     else:
         raise NotFoundException()
 
@@ -1004,6 +1006,7 @@ def _image_member_update(context, memb, values):
     delete_inverted_indices(memb, MEMBER_PREFIX, batch)
 
     memb = dict(memb, **values)
+    memb['updated_at'] = timeutils.utcnow()
 
     save_inverted_indices(memb, MEMBER_PREFIX, batch)
 
@@ -1016,7 +1019,7 @@ def _image_member_update(context, memb, values):
 
     batch.send()
 
-    return memb
+    return _image_member_format(memb)
 
 
 def image_member_delete(context, memb_id, session=None):
@@ -1045,7 +1048,7 @@ def _image_member_get(context, memb_id):
     image = image_cf.get(image_id)
     column_key = memb_id
 
-    return loads(image[column_key])
+    return _image_member_format(loads(image[column_key]))
 
 
 def image_member_find(context, image_id=None,
@@ -1088,11 +1091,15 @@ def image_member_find(context, image_id=None,
         return members
 
     if image_id:
-        image = image_cf.get(image_id)
+        try:
+            image = image_cf.get(image_id)
+        except NotFoundException:
+            return []
 
         criteria = construct_criteria_from_image(image)
     
-        return find_matching_members(image, criteria)
+        return [_image_member_format(m)
+                for m in find_matching_members(image, criteria)]
 
     else:
         members = []
