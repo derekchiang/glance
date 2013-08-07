@@ -144,7 +144,9 @@ def save_inverted_indices(obj, prefix, batch):
         # row key would be something like:
         # members.status=pending
         if k != 'image_id':
-            row_key = prefix + '.' + str(k) + '=' + str(v)
+            row_key = prefix + '.' + dumps(k) + '=' + dumps(v)
+            print 'row key is: '
+            print row_key
             batch.insert(inverted_indices_cf, row_key, {image_id: ''})
 
 
@@ -157,12 +159,15 @@ def delete_inverted_indices(obj, prefix, batch):
     if image_id:
         for k, v in obj.iteritems():
             if k != 'image_id':
-                row_key = prefix + '.' + str(k) + '=' + str(v)
+                row_key = prefix + '.' + dumps(k) + '=' + dumps(v)
                 batch.remove(inverted_indices_cf, row_key, [image_id])
 
 
 def query_inverted_indices(prefix, key, value):
-    row_key = prefix + '.' + str(key) + '=' + str(value)
+    if not isinstance(value, basestring):
+        value = dumps(value)
+
+    row_key = prefix + '.' + dumps(key) + '=' + dumps(value)
 
     try:
         return inverted_indices_cf.get(row_key)
@@ -200,7 +205,8 @@ def create_image_member(**kwargs):
         'can_share': False,
         'status': 'pending',
         'deleted_at': None,
-        'deleted': False
+        'deleted': False,
+        'member': None
     }, **kwargs)
 
 def create_image_location(**kwargs):
@@ -1002,6 +1008,9 @@ def _image_member_update(context, memb, values):
         memb['id']: dumps(memb)
     })
 
+    print memb
+    print dumps(memb)
+
     batch.send()
 
     return memb
@@ -1037,13 +1046,16 @@ def image_member_find(context, image_id=None,
     """
 
     def construct_criteria_from_image(image):
-        if image.get('owner') == context.owner:
-            image_is_owner = True
-        else:
-            image_is_owner = False
+        criteria = []
 
-        criteria = [Or(Identity(image_is_owner, EQ(True)),
-                       Attr('member', EQ(context.owner)))]
+        if not context.is_admin:
+            if image['owner'] == dumps(context.owner):
+                image_is_owner = True
+            else:
+                image_is_owner = False
+
+            criteria.append(Or(Identity(image_is_owner, EQ(True)),
+                               Attr('member', EQ(context.owner))))
 
         if member is not None:
             criteria.append(Attr('member', EQ(member)))
@@ -1072,7 +1084,9 @@ def image_member_find(context, image_id=None,
         return find_matching_members(image, criteria)
 
     else:
+        members = []
         image_ids = set()
+
         if member is not None:
             image_ids = image_ids.union(
                 query_inverted_indices(MEMBER_PREFIX, 'member', member))
@@ -1080,15 +1094,39 @@ def image_member_find(context, image_id=None,
         if status is not None:
             image_ids = image_ids.union(
                 query_inverted_indices(MEMBER_PREFIX, 'status', status))
+        
+        if member is None and status is None:
+            # Fall back to using context.owner
+            # if no other filters are given
+            image_ids = image_ids.union(
+                query_inverted_indices(MEMBER_PREFIX, 'member', context.owner))
+            clause = create_index_clause(
+                [create_index_expression('owner', dumps(context.owner), index.EQ)],
+                count=99999999)
+            images = image_cf.get_indexed_slices(clause)
+            for key, _ in images:
+                image_ids.add(key)
 
-        members = []
+        print image_ids
+
         for image_id in image_ids:
             image = image_cf.get(image_id)
             criteria = construct_criteria_from_image(image)
             members.extend(find_matching_members(image, criteria))
 
-        return members
+        return [_image_member_format(m) for m in members]
 
+def _image_member_format(member_ref):
+    """Format a member ref for consumption outside of this module"""
+    return {
+        'id': member_ref['id'],
+        'image_id': member_ref['image_id'],
+        'member': member_ref['member'],
+        'can_share': member_ref['can_share'],
+        'status': member_ref['status'],
+        'created_at': member_ref['created_at'],
+        'updated_at': member_ref['updated_at']
+    }
 
 # pylint: disable-msg=C0111
 def _can_show_deleted(context):

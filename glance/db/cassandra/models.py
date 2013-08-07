@@ -55,9 +55,9 @@ def register_models():
         }
 
         sys.create_column_family(KEYSPACE_NAME, 'Images',
-                                comparator_type=UTF8Type(),
-                                key_validation_class=UTF8Type(), 
-                                column_validation_classes=image_validators)
+                                 comparator_type=UTF8Type(),
+                                 key_validation_class=UTF8Type(), 
+                                 column_validation_classes=image_validators)
 
         # Create indices on columns
         sys.create_index(KEYSPACE_NAME, 'Images', 'id', 'UTF8Type')
@@ -66,7 +66,9 @@ def register_models():
         sys.create_index(KEYSPACE_NAME, 'Images', 'name', 'UTF8Type')
         sys.create_index(KEYSPACE_NAME, 'Images', 'checksum', 'UTF8Type')
 
-        sys.create_column_family(KEYSPACE_NAME, 'InvertedIndices')
+        sys.create_column_family(KEYSPACE_NAME, 'InvertedIndices',
+                                 comparator_type=UTF8Type(),
+                                 key_validation_class=UTF8Type())
 
 
 def unregister_models():
