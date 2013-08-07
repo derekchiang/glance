@@ -170,7 +170,7 @@ def query_inverted_indices(prefix, key, value):
     row_key = prefix + '.' + dumps(key) + '=' + dumps(value)
 
     try:
-        return inverted_indices_cf.get(row_key)
+        return [k for k, v in inverted_indices_cf.get(row_key).iteritems()]
     except NotFoundException:
         return []
 
@@ -987,7 +987,10 @@ def image_member_update(context, memb_id, values):
     """Update an ImageMember object"""
 
     memb = _image_member_get(context, memb_id)
-    return _image_member_update(context, memb, values, session)
+    if memb:
+        return _image_member_update(context, memb, values, session)
+    else:
+        raise NotFoundException()
 
 
 def _image_member_update(context, memb, values):
@@ -1018,9 +1021,14 @@ def _image_member_update(context, memb, values):
 
 def image_member_delete(context, memb_id, session=None):
     """Delete an ImageMember object"""
-    member = _image_member_get(context, memb_id)
-    delete_inverted_indices(memb)
-    image_cf.remove(memb['image_id'], [memb['id']])
+    batch = Mutator(pool)
+
+    memb = _image_member_get(context, memb_id)
+    if memb:
+        delete_inverted_indices(memb, MEMBER_PREFIX, batch)
+        batch.remove(image_cf, memb['image_id'], [memb['id']])
+
+    batch.send()
 
 
 def _image_member_get(context, memb_id):
@@ -1028,8 +1036,11 @@ def _image_member_get(context, memb_id):
 
     image_ids = query_inverted_indices(MEMBER_PREFIX, 'id', memb_id)
 
-    # TODO: is this reasonable?  Can a member belong to multiple images?
-    image_id = image_ids[0]
+    if len(image_ids) == 0:
+        return None
+    else:
+        # TODO: Can a member belong to multiple images?
+        image_id = image_ids[0]
 
     image = image_cf.get(image_id)
     column_key = memb_id
