@@ -955,8 +955,10 @@ def image_property_delete(context, prop_name, image_id):
     Used internally by image_property_create and image_property_update
     """
     batch = Mutator(pool)
-    _image_property_delete(context, [prop_name], image_id, batch)
+    prop = _image_property_delete(context, [prop_name], image_id, batch)
     batch.send()
+
+    return prop
 
 def _image_property_delete(context, prop_names, image_id, batch=None):
     remove_columns = []
@@ -971,11 +973,15 @@ def _image_property_delete(context, prop_names, image_id, batch=None):
             if value['name'] in prop_names:
                 delete_inverted_indices(value, PROPERTY_PREFIX, batch)
                 remove_columns.append(column)
+                # Only one prop should be returned
+                returned_prop = value
 
     if batch:
         batch.remove(image_cf, image_id, remove_columns)
     else:
         image_cf.remove(image_id, remove_columns)
+
+    return returned_prop
 
 
 def image_member_create(context, values, session=None):
