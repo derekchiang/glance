@@ -1170,11 +1170,15 @@ def image_tag_set_all(context, image_id, tags):
     tags = set(tags)
 
     tags_to_create = tags - existing_tags
-    #NOTE(bcwaldon): we call 'reversed' here to ensure the ImageTag.id fields
-    # will be populated in the order required to reflect the correct ordering
-    # on a subsequent call to image_tag_get_all
-    _image_tag_create(context, image_id, reversed(list(tags_to_create)))
-    _image_tag_delete(context, image_id, tags_to_delete)
+    # TODO: currently there is no simple way to ensure that
+    # the tags returned by image_tag_get_all will be in the
+    # same order as when set by image_tag_set_all.
+    # Maybe consider using timestamps as ids, taking advantage
+    # of the fact that Cassandra orders column names naturely?
+    _image_tag_create(context, image_id, list(tags_to_create))
+
+    tags_to_delete = existing_tags - tags
+    _image_tag_delete(context, image_id, list(tags_to_delete))
 
 
 def image_tag_create(context, image_id, value):
@@ -1209,7 +1213,7 @@ def _image_tag_delete(context, image_id, values):
     columns_to_remove = []
 
     for value in values:
-        tags = unmarshal_image(image.cf.get(image_id))['tags']
+        tags = unmarshal_image(image_cf.get(image_id))['tags']
         tags = filter(lambda x: x['value'] == value, tags)
 
         if len(tags) == 0:
@@ -1224,8 +1228,10 @@ def _image_tag_delete(context, image_id, values):
 
 def image_tag_get_all(context, image_id):
     """Get a list of tags for a specific image."""
-    image = unmarshal_image(image_cf.get(image_id))
-    tags = unmarshal_image(image_cf.get(image_id)).get('tags') or []
+    try:
+        tags = unmarshal_image(image_cf.get(image_id)).get('tags') or []
+    except NotFoundException:
+        return []
     tags = sort_dicts(tags, [('created_at', 'asc')])
 
     return [tag['value'] for tag in tags]
