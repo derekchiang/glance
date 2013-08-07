@@ -799,7 +799,10 @@ def _image_update(context, values, image_id, purge_props=False):
     location_data = values.pop('locations', None)
 
     if image_id:
-        image = image_get(context, image_id)
+        image = image_cf.get(image_id)
+
+        print 'the image I just got is: '
+        print image
 
         # Perform authorization check
         _check_mutate_authorization(context, image)
@@ -879,6 +882,9 @@ def _image_update(context, values, image_id, purge_props=False):
         _image_locations_set(image, location_data, batch)
 
     batch.insert(image_cf, image['id'], marshal_image(image))
+
+    print 'the image is: '
+    print marshal_image(image)
 
     batch.send()
 
