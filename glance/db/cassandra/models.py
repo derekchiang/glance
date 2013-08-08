@@ -37,22 +37,26 @@ def register_models():
         sys.create_keyspace(KEYSPACE_NAME, SIMPLE_STRATEGY, {'replication_factor': '1'})
 
         image_validators = {
-            # 'id': UTF8Type(),
-            # 'name': UTF8Type(),
-            # 'disk_format': UTF8Type(),
-            # 'container_format': UTF8Type(),
-            # 'size': IntegerType(),
-            # 'status': UTF8Type(),
-            # 'is_public': BooleanType(),
-            # 'checksum': UTF8Type(),
-            # 'min_disk': IntegerType(),
-            # 'min_ram': IntegerType(),
-            # 'owner': UTF8Type(),
-            # 'protected': BooleanType(),
-            # 'created_at': DateType(),
-            # 'updated_at': DateType(),
-            # 'deleted_at': DateType(),
-            # 'deleted': BooleanType()
+            'id': UTF8Type(),
+            'name': UTF8Type(),
+            'disk_format': UTF8Type(),
+            'container_format': UTF8Type(),
+            'size': IntegerType(),
+            'status': UTF8Type(),
+            'is_public': BooleanType(),
+            'checksum': UTF8Type(),
+            'min_disk': IntegerType(),
+            'min_ram': IntegerType(),
+            'owner': UTF8Type(),
+            'protected': BooleanType(),
+            'created_at': DateType(),
+            'updated_at': DateType(),
+            # We are setting 'deleted_at' as a UTF8Type, because
+            # we don't really need deleted_at and it's here only
+            # for backward capatibility.  It's value is always
+            # None, so it can't be stored in Cassandra as DateType
+            'deleted_at': UTF8Type(),
+            'deleted': BooleanType()
         }
 
         sys.create_column_family(KEYSPACE_NAME, 'Images',
@@ -62,7 +66,7 @@ def register_models():
 
         # Create indices on columns
         sys.create_index(KEYSPACE_NAME, 'Images', 'id', 'UTF8Type')
-        sys.create_index(KEYSPACE_NAME, 'Images', 'is_public', 'UTF8Type')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'is_public', 'BooleanType')
         sys.create_index(KEYSPACE_NAME, 'Images', 'owner', 'UTF8Type')
         sys.create_index(KEYSPACE_NAME, 'Images', 'name', 'UTF8Type')
         sys.create_index(KEYSPACE_NAME, 'Images', 'checksum', 'UTF8Type')

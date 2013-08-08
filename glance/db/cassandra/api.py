@@ -170,9 +170,6 @@ def delete_inverted_indices(obj, prefix, batch):
 
 
 def query_inverted_indices(prefix, key, value):
-    if not isinstance(value, basestring):
-        value = dumps(value)
-
     row_key = prefix + '.' + dumps(key) + '=' + dumps(value)
 
     try:
@@ -282,6 +279,16 @@ def loads(string):
     return obj
 
 
+def is_supported_type(val):
+    """
+    Test if a value can be stored in Cassandra.
+    """
+    return (isinstance(val, basestring) or
+            isinstance(val, int) or
+            isinstance(val, bool) or
+            isinstance(val, datetime))
+
+
 def marshal_image(obj):
     """
     Marshal all fields of an object such that they can be inserted
@@ -290,10 +297,10 @@ def marshal_image(obj):
     output = {}
 
     for k, v in obj.iteritems():
-        if not isinstance(v, basestring):
-            output[k] = dumps(v)
-        else:
+        if is_supported_type(v):
             output[k] = v
+        else:
+            output[k] = dumps(v)
 
     return output
 
@@ -671,7 +678,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     client_side_filters = []
 
     if (not context.is_admin) or admin_as_user == True:
-        public_image_filters.append(create_index_expression('is_public', dumps(True), index.EQ))
+        public_image_filters.append(create_index_expression('is_public', True, index.EQ))
 
         if context.owner is not None:
             own_image_filters.append(create_index_expression('owner', context.owner, index.EQ))
@@ -688,9 +695,9 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     if 'visibility' in filters:
         visibility = filters.pop('visibility')
         if visibility == 'public':
-            common_filters.append(create_index_expression('is_public', dumps(True), index.EQ))
+            common_filters.append(create_index_expression('is_public', True, index.EQ))
         elif visibility == 'private':
-            common_filters.append(create_index_expression('is_public', dumps(False), index.EQ))
+            common_filters.append(create_index_expression('is_public', False, index.EQ))
             if context.owner is not None and ((not context.is_admin)
                                               or admin_as_user == True):
                 common_filters.append('owner', context.owner, index.EQ)
@@ -701,7 +708,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
             own_image_filters = []
 
     if is_public is not None:
-        common_filters.append(create_index_expression('is_public', dumps(is_public), index.EQ))
+        common_filters.append(create_index_expression('is_public', is_public, index.EQ))
 
     if 'is_public' in filters:
         client_side_filters.append(Attr('properties',
@@ -738,7 +745,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     for k, v in filters.iteritems():
         if v is not None:
             key = k
-            if not isinstance(v, basestring):
+            if not is_supported_type(v):
                 v = dumps(v)
             if k.endswith('_min') or k.endswith('_max'):
                 key = key[0:-4]
@@ -944,6 +951,8 @@ def _image_update(context, values, image_id, purge_props=False):
     if location_data is not None:
         _image_locations_set(image, location_data, batch)
 
+    print 'marshalled: '
+    print marshal_image(image)
     batch.insert(image_cf, image['id'], marshal_image(image))
 
     batch.send()
@@ -1203,7 +1212,7 @@ def image_member_find(context, image_id=None,
             image_ids = image_ids.union(
                 query_inverted_indices(MEMBER_PREFIX, 'member', context.owner))
             clause = create_index_clause(
-                [create_index_expression('owner', dumps(context.owner), index.EQ)],
+                [create_index_expression('owner', context.owner, index.EQ)],
                 count=99999999)
             images = image_cf.get_indexed_slices(clause)
             for key, _ in images:
