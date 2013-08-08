@@ -356,22 +356,25 @@ def sort_dicts(dicts, orders):
     [('member', 'asc'), ('age', 'desc')]
     """
     def compare(a, b):
-        for field, dir in orders:
-            if dir == 'asc':
-                if a[field] > b[field]:
-                    return 1
-                elif a[field] < b[field]:
-                    return -1
-                else:
-                    continue
-            elif dir == 'desc':
-                if a[field] < b[field]:
-                    return 1
-                elif a[field] > b[field]:
-                    return -1
-                else:
-                    continue
-        return 0
+        try:
+            for field, dir in orders:
+                if dir == 'asc':
+                    if a[field] > b[field]:
+                        return 1
+                    elif a[field] < b[field]:
+                        return -1
+                    else:
+                        continue
+                elif dir == 'desc':
+                    if a[field] < b[field]:
+                        return 1
+                    elif a[field] > b[field]:
+                        return -1
+                    else:
+                        continue
+            return 0
+        except KeyError:
+            raise exception.InvalidSortKey()
     # Some ordering must be given
     assert len(orders) > 0
 
