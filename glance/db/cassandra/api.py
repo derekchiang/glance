@@ -812,14 +812,6 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     if marker is not None:
         marker_image = image_get(context, marker)
 
-    print 'filters are: '
-    print common_filters
-    print public_image_filters
-    print own_image_filters
-
-    print 'images are: '
-    print images
-
     sorted_images = _paginate(images, limit,
                               [sort_key, 'created_at', 'id'],
                               marker=marker_image,
