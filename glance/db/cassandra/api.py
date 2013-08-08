@@ -242,12 +242,18 @@ def dumps(obj):
     Dumps anything (including datetime objects) using the json module,
     appending a prefix to distinguish from normal strings.
     """
-    return MARSHAL_PREFIX + json.dumps(obj, default=lambda x: time.mktime(x.timetuple()))
+    return MARSHAL_PREFIX + json.dumps(obj, default=lambda x: str(x))
 
 def loads(string):
     """
     Loads anything, including those prefixed.
     """
+    def strlist_to_intlist(str_list):
+        """
+        Convert a list of strings to a list of integers
+        """
+        return [int(s) for s in str_list]
+
     if string.startswith(MARSHAL_PREFIX):
         obj = json.loads(string[len(MARSHAL_PREFIX):])
     else:
@@ -256,8 +262,14 @@ def loads(string):
     if isinstance(obj, dict):
         for k, v in obj.iteritems():
             if k in DATETIME_FIELDS:
-                if isinstance(obj[k], float):
-                    obj[k] = datetime.fromtimestamp(v)
+                if isinstance(obj[k], basestring):
+                    # Parse string of the format: 2013-08-08 13:49:53.239187
+                    parts = obj[k].split(' ') # [2013-08-08, 13:49:53.239187]
+                    year, month, day = strlist_to_intlist(parts[0].split('-'))
+                    hms, milisecond = parts[1].split('.')
+                    milisecond = int(milisecond)
+                    hour, minute, second = strlist_to_intlist(hms.split(':'))
+                    obj[k] = datetime(year, month, day, hour, minute, second, milisecond)
 
     return obj
 
@@ -548,6 +560,19 @@ def _paginate(images, limit, sort_keys, marker=None,
     # does not support soft delete, using the deleted image as a marker
     # will result in a NotFoundException.
 
+    # Another Gotcha is that, the current implementation only saves
+    # timestamps in seconds rather than miliseconds, as a result of
+    # which if you create two images consecutively within a second,
+    # they will appear to be created at the same time, and therefore
+    # might be sorted in any arbitrary order.
+    # This causes some tests to fail, but should be fine in production.
+
+    if limit == 0:
+        return []
+    else:
+        # A hack to get all images when limit is not given
+        limit = limit or 99999999
+
     if 'id' not in sort_keys:
         # TODO(justinsb): If this ever gives a false-positive, check
         # the actual primary key, rather than assuming its id
@@ -567,6 +592,12 @@ def _paginate(images, limit, sort_keys, marker=None,
 
     sort_criteria = zip(sort_keys, sort_dirs)
     sorted_images = sort_dicts(images, sort_criteria)
+
+    print 'sorted images: '
+    print sorted_images
+    
+    for i in sorted_images:
+        print i['created_at']
 
     if marker is None:
         return sorted_images[:limit]
@@ -621,12 +652,6 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     """
 
     filters = filters or {}
-
-    if limit == 0:
-        return []
-    else:
-        # A hack to get all images when limit is not given
-        limit = limit or 99999999
 
     # We are querying for images that satisfy one of the following conditions:
     # 1. Anyone can see it (is_public = True)
@@ -745,7 +770,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     if public_image_filters != []:
         public_image_filters.extend(common_filters)
         res = image_cf.get_indexed_slices(create_index_clause(
-            public_image_filters, count=limit))
+            public_image_filters))
         for key, image in res:
             if key not in key_set:
                 images.append(image)
@@ -754,7 +779,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     if own_image_filters != []:
         own_image_filters.extend(common_filters)
         res = image_cf.get_indexed_slices(create_index_clause(
-            own_image_filters, count=limit))
+            own_image_filters))
         for key, image in res:
             if key not in key_set:
                 images.append(image)
@@ -765,7 +790,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
             temp_filters = [create_index_expression('id', image_id, index.EQ)]
             temp_filters.extend(common_filters)
             res = image_cf.get_indexed_slices(create_index_clause(
-                temp_filters, count=limit))
+                temp_filters))
             for key, image in res:
                 if key not in key_set:
                     images.append(image)
@@ -777,6 +802,9 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     marker_image = None
     if marker is not None:
         marker_image = image_get(context, marker)
+
+    print 'images are: '
+    print images
 
     sorted_images = _paginate(images, limit,
                               [sort_key, 'created_at', 'id'],
@@ -866,6 +894,8 @@ def _image_update(context, values, image_id, purge_props=False):
         values['protected'] = bool(values.get('protected', False))
 
         image = create_image()
+        print 'creating image'
+        print image['created_at']
 
     # Need to canonicalize ownership
     if 'owner' in values and not values['owner']:
