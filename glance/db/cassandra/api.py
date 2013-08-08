@@ -123,9 +123,17 @@ def setup_db_env():
 
     pool = ConnectionPool(KEYSPACE_NAME,\
                           [CONF.glance_cassandra_url])
-    image_cf = ColumnFamily(pool, 'Images')
-    inverted_indices_cf = ColumnFamily(pool, 'InvertedIndices')
-    # repo = ImageRepo(pool)
+
+    # There are cases when individual column families are
+    # deleted but the keyspace is kept.  In this case we
+    # want to remove the whole keyspace and start all
+    # over again
+    try:
+        image_cf = ColumnFamily(pool, 'Images')
+        inverted_indices_cf = ColumnFamily(pool, 'InvertedIndices')
+    except NotFoundException:
+        unregister_models()
+        setup_db_env()
 
 
 def clear_db_env():
@@ -559,14 +567,7 @@ def _paginate(images, limit, sort_keys, marker=None,
     # a deleted image as the marker.  However since the Cassandra driver
     # does not support soft delete, using the deleted image as a marker
     # will result in a NotFoundException.
-
-    # Another Gotcha is that, the current implementation only saves
-    # timestamps in seconds rather than miliseconds, as a result of
-    # which if you create two images consecutively within a second,
-    # they will appear to be created at the same time, and therefore
-    # might be sorted in any arbitrary order.
-    # This causes some tests to fail, but should be fine in production.
-
+    
     if limit == 0:
         return []
     else:

@@ -19,6 +19,7 @@
 """
 SQLAlchemy models for glance data
 """
+from pycassa import InvalidRequestException
 from pycassa.types import DateType, IntegerType, UTF8Type, \
                           BooleanType, CassandraType
 from pycassa.system_manager import SystemManager, SIMPLE_STRATEGY, \
@@ -77,8 +78,19 @@ def unregister_models():
     """
     sys = SystemManager()
 
-    sys.drop_column_family(KEYSPACE_NAME, 'Images')
-    sys.drop_column_family(KEYSPACE_NAME, 'InvertedIndices')
+    try:
+        sys.drop_column_family(KEYSPACE_NAME, 'Images')
+    except InvalidRequestException:
+        pass
 
-    sys.drop_keyspace(KEYSPACE_NAME)
+    try:
+        sys.drop_column_family(KEYSPACE_NAME, 'InvertedIndices')
+    except InvalidRequestException:
+        pass
+
+    try:
+        sys.drop_keyspace(KEYSPACE_NAME)
+    except InvalidRequestException:
+        pass
+
     sys.close()
