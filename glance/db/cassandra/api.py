@@ -516,8 +516,7 @@ def _paginate(images, limit, sort_keys, marker=None,
     marker, then the actual marker object must be fetched from the db and
     passed in to us as marker.
 
-    :param query: the query object to which we should add paging/sorting
-    :param model: the ORM model class
+    :param images: a group of dictionaries representing images to be paginate
     :param limit: maximum number of items to return
     :param sort_keys: array of attributes by which results should be sorted
     :param marker: the last item of the previous page; we returns the next
@@ -528,6 +527,12 @@ def _paginate(images, limit, sort_keys, marker=None,
     :rtype: sqlalchemy.orm.query.Query
     :return: The query with sorting/pagination added.
     """
+
+    # TODO: One potential problem with the current implementation of
+    # pagination is that, the client seems to expect that it can submit
+    # a deleted image as the marker.  However since the Cassandra driver
+    # does not support soft delete, using the deleted image as a marker
+    # will result in a NotFoundException.
 
     if 'id' not in sort_keys:
         # TODO(justinsb): If this ever gives a false-positive, check
@@ -1087,14 +1092,13 @@ def image_member_find(context, image_id=None,
     :param member: tenant to which membership has been granted
     """
 
-    print 'context owner is: '
-    print context.owner
-
     def construct_criteria_from_image(image):
         criteria = []
 
         if not context.is_admin:
-            if image['owner'] == context.owner:
+            image_owner = loads(image['owner'])
+
+            if image_owner == context.owner:
                 image_is_owner = True
             else:
                 image_is_owner = False
@@ -1112,7 +1116,6 @@ def image_member_find(context, image_id=None,
         return criteria
 
     def find_matching_members(image, criteria):
-        print 'the criteria are:'
         inspect_attr(criteria)
 
         members = []
@@ -1130,10 +1133,6 @@ def image_member_find(context, image_id=None,
             image = image_cf.get(image_id)
         except NotFoundException:
             return []
-
-
-        print 'the image is: '
-        print image
 
         criteria = construct_criteria_from_image(image)
     
