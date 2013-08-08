@@ -306,7 +306,10 @@ def unmarshal_image(image):
 
 
 def sort_dicts(dicts, orders):
-    """Sort a list of dictionaries"""
+    """Sort a list of dictionaries
+    orders are in the form of:
+    [('member', 'asc'), ('age', 'desc')]
+    """
     def compare(a, b):
         for field, dir in orders:
             if dir == 'asc':
@@ -494,7 +497,7 @@ def is_image_visible(context, image, status=None):
     return False
 
 
-def _paginate_query(query, model, limit, sort_keys, marker=None,
+def _paginate(images, limit, sort_keys, marker=None,
                     sort_dir=None, sort_dirs=None):
     """Returns a query with sorting / pagination criteria added.
 
@@ -543,9 +546,36 @@ def _paginate_query(query, model, limit, sort_keys, marker=None,
 
     assert(len(sort_dirs) == len(sort_keys))
 
-    # Add sorting
-    if marker is not None:
-        pass
+    sort_criteria = zip(sort_keys, sort_dirs)
+    sorted_images = sort_dicts(images, sort_criteria)
+
+    if marker is None:
+        return sorted_images[:limit]
+    else:
+        def after_marker(image):
+            for sort_key, sort_dir in sort_criteria:
+                if sort_dir == 'asc':
+                    if marker[sort_key] < image[sort_key]:
+                        return True
+                    elif marker[sort_key] > image[sort_key]:
+                        return False
+                    else:
+                        continue
+                elif sort_dir == 'desc':
+                    if marker[sort_key] > image[sort_key]:
+                        return True
+                    elif marker[sort_key] < image[sort_key]:
+                        return False
+                    else:
+                        continue
+                else:
+                    raise Exception('Undefined direction %s' % sort_dir)
+
+            return False
+
+        return filter(after_marker, sorted_images)[:limit]
+
+    
 
 @trace
 def image_get_all(context, filters=None, marker=None, limit=None,
@@ -724,12 +754,16 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     images = [unmarshal_image(image) for image in images]
     images = filter(lambda x: client_side_filters.match(x), images)
 
-    images = sort_dicts(images, [(sort_key, sort_dir)])
+    marker_image = None
+    if marker is not None:
+        marker_image = image_get(context, marker)
 
-    # TODO: pagination
+    sorted_images = _paginate(images, limit,
+                              [sort_key, 'created_at', 'id'],
+                              marker=marker_image,
+                              sort_dir=sort_dir)
 
-
-    return images
+    return sorted_images
 
 @trace
 def _validate_image(values):
