@@ -145,13 +145,10 @@ def save_inverted_indices(obj, prefix, batch):
         # members.status=pending
         if k != 'image_id':
             row_key = prefix + '.' + dumps(k) + '=' + dumps(v)
-            print 'row key is: '
-            print row_key
             batch.insert(inverted_indices_cf, row_key, {image_id: ''})
 
 
 def delete_inverted_indices(obj, prefix, batch):
-    print obj
     image_id = obj.get('image_id')
 
     # When a property is just getting created, it has no image_id
@@ -409,8 +406,6 @@ def image_get(context, image_id, session=None, force_show_deleted=False):
         LOG.debug(msg)
         raise exception.Forbidden(msg)
 
-    print 'image is: '
-    print image
     return image
 
 def is_image_mutable(context, image):
@@ -485,8 +480,15 @@ def is_image_visible(context, image, status=None):
                                     image_id=image['id'],
                                     member=context.owner,
                                     status=status)
+
+        print 'members are: '
+        print members
+
         if members:
             return True
+
+    print context.__dict__
+    print image
 
     # Private image
     return False
@@ -570,12 +572,6 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     """
 
     filters = filters or {}
-
-    print 'arguments: '
-    print filters
-    print member_status
-    print is_public
-    print admin_as_user
 
     if limit == 0:
         return []
@@ -698,8 +694,6 @@ def image_get_all(context, filters=None, marker=None, limit=None,
 
     if public_image_filters != []:
         public_image_filters.extend(common_filters)
-        print 'public_image_filters: '
-        print public_image_filters
         res = image_cf.get_indexed_slices(create_index_clause(
             public_image_filters, count=limit))
         for key, image in res:
@@ -731,9 +725,6 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     images = filter(lambda x: client_side_filters.match(x), images)
 
     images = sort_dicts(images, [(sort_key, sort_dir)])
-
-    print 'images are: '
-    print images
 
     # TODO: pagination
 
@@ -838,7 +829,6 @@ def _image_update(context, values, image_id, purge_props=False):
     # on new records, only on existing records, which is, well,
     # idiotic.
     image = dict(image, **values)
-    image['updated_at'] = timeutils.utcnow()
     values = _validate_image(image)
 
     # Batch operations on inverted indices and images
@@ -849,8 +839,6 @@ def _image_update(context, values, image_id, purge_props=False):
     new_properties_names = properties.keys()
 
     if purge_props:
-        print orig_properties_names
-        print new_properties_names
         prop_names_to_delete = set(orig_properties_names) - set(new_properties_names)
         _image_property_delete(context, prop_names_to_delete,
                            image['id'], batch=batch)
@@ -872,9 +860,6 @@ def _image_update(context, values, image_id, purge_props=False):
         _image_locations_set(image, location_data, batch)
 
     batch.insert(image_cf, image['id'], marshal_image(image))
-
-    print 'the image is: '
-    print marshal_image(image)
 
     batch.send()
 
@@ -921,7 +906,7 @@ def _image_locations_set(image, locations, batch=None):
         image[new_location['id']] = new_location
 
 
-def image_property_create(context, values, batch=None):
+def image_property_create(context, values, batch=None, updating=False):
     """Create an ImageProperty object"""
     prop = create_image_property()
     prop = _image_property_update(context, prop, values,
@@ -929,7 +914,7 @@ def image_property_create(context, values, batch=None):
     return prop
 
 
-def _image_property_update(context, prop, values, batch=None):
+def _image_property_update(context, prop, values, batch=None, updating=True):
     """
     Used internally by image_property_create and image_property_update
     """
@@ -943,7 +928,8 @@ def _image_property_update(context, prop, values, batch=None):
 
     delete_inverted_indices(prop, PROPERTY_PREFIX, batch)
     prop = dict(prop, **values)
-    prop['updated_at'] = timeutils.utcnow()
+    if updating:
+        prop['updated_at'] = timeutils.utcnow()
     save_inverted_indices(prop, PROPERTY_PREFIX, batch)
 
     batch.insert(image_cf, prop['image_id'], {prop['id']: dumps(prop)})
@@ -991,7 +977,7 @@ def _image_property_delete(context, prop_names, image_id, batch=None):
 def image_member_create(context, values, session=None):
     """Create an ImageMember object"""
     memb = create_image_member()
-    memb = _image_member_update(context, memb, values)
+    memb = _image_member_update(context, memb, values, updating=False)
     return memb
 
 
@@ -1005,7 +991,7 @@ def image_member_update(context, memb_id, values):
         raise NotFoundException()
 
 
-def _image_member_update(context, memb, values):
+def _image_member_update(context, memb, values, updating=True):
     """Apply supplied dictionary of values to a Member object."""
     batch = Mutator(pool)
 
@@ -1016,16 +1002,14 @@ def _image_member_update(context, memb, values):
     delete_inverted_indices(memb, MEMBER_PREFIX, batch)
 
     memb = dict(memb, **values)
-    memb['updated_at'] = timeutils.utcnow()
+    if updating:
+        memb['updated_at'] = timeutils.utcnow()
 
     save_inverted_indices(memb, MEMBER_PREFIX, batch)
 
     batch.insert(image_cf, memb['image_id'], {
         memb['id']: dumps(memb)
     })
-
-    print memb
-    print dumps(memb)
 
     batch.send()
 
@@ -1069,11 +1053,14 @@ def image_member_find(context, image_id=None,
     :param member: tenant to which membership has been granted
     """
 
+    print 'context owner is: '
+    print context.owner
+
     def construct_criteria_from_image(image):
         criteria = []
 
         if not context.is_admin:
-            if image['owner'] == dumps(context.owner):
+            if image['owner'] == context.owner:
                 image_is_owner = True
             else:
                 image_is_owner = False
@@ -1091,10 +1078,14 @@ def image_member_find(context, image_id=None,
         return criteria
 
     def find_matching_members(image, criteria):
+        print 'the criteria are:'
+        inspect_attr(criteria)
+
         members = []
         for column, value in image.iteritems():
             if column.startswith(MEMBER_PREFIX):
                 m = loads(value)
+                print m
                 if criteria.match(m):
                     members.append(m)
 
@@ -1105,6 +1096,10 @@ def image_member_find(context, image_id=None,
             image = image_cf.get(image_id)
         except NotFoundException:
             return []
+
+
+        print 'the image is: '
+        print image
 
         criteria = construct_criteria_from_image(image)
     
@@ -1134,8 +1129,6 @@ def image_member_find(context, image_id=None,
             images = image_cf.get_indexed_slices(clause)
             for key, _ in images:
                 image_ids.add(key)
-
-        print image_ids
 
         for image_id in image_ids:
             image = image_cf.get(image_id)
