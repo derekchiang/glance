@@ -685,6 +685,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     client_side_filters = []
 
     if (not context.is_admin) or admin_as_user == True:
+        print 'not a admin'
         public_image_filters.append(create_index_expression('is_public', True, index.EQ))
 
         if context.owner is not None:
@@ -778,38 +779,31 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     client_side_filters = And(*client_side_filters)
 
     images = []
-
     # To avoid repeated images
     key_set = set()
 
-    if public_image_filters != []:
-        public_image_filters.extend(common_filters)
-        res = image_cf.get_indexed_slices(create_index_clause(
-            public_image_filters))
-        for key, image in res:
-            if key not in key_set:
-                images.append(image)
-                key_set.add(key)
+    def filter_images(filters):
+        if filters != []:
+            res = image_cf.get_indexed_slices(create_index_clause(
+                filters))
+            for key, image in res:
+                if key not in key_set:
+                    images.append(image)
+                    key_set.add(key)
 
-    if own_image_filters != []:
-        own_image_filters.extend(common_filters)
-        res = image_cf.get_indexed_slices(create_index_clause(
-            own_image_filters))
-        for key, image in res:
-            if key not in key_set:
-                images.append(image)
-                key_set.add(key)
+    filter_images(common_filters)
+
+    public_image_filters.extend(common_filters)
+    filter_images(public_image_filters)
+
+    own_image_filters.extend(common_filters)
+    filter_images(own_image_filters)
 
     if shared_image_ids != []:
         for image_id in shared_image_ids:
             temp_filters = [create_index_expression('id', image_id, index.EQ)]
             temp_filters.extend(common_filters)
-            res = image_cf.get_indexed_slices(create_index_clause(
-                temp_filters))
-            for key, image in res:
-                if key not in key_set:
-                    images.append(image)
-                    key_set.add(key)
+            filter_images(temp_filters)
 
     images = [unmarshal_image(image) for image in images]
     images = filter(lambda x: client_side_filters.match(x), images)
@@ -817,6 +811,11 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     marker_image = None
     if marker is not None:
         marker_image = image_get(context, marker)
+
+    print 'filters are: '
+    print common_filters
+    print public_image_filters
+    print own_image_filters
 
     print 'images are: '
     print images
@@ -1158,7 +1157,10 @@ def image_member_find(context, image_id=None,
         criteria = []
 
         if not context.is_admin:
-            if image['owner'] == context.owner:
+            # context.owner could be None, in which case it needs to be
+            # dumped before it can be compared
+            if (image['owner'] == context.owner or
+                image['owner'] == dumps(context.owner)):
                 image_is_owner = True
             else:
                 image_is_owner = False
@@ -1216,9 +1218,16 @@ def image_member_find(context, image_id=None,
             # if no other filters are given
             image_ids = image_ids.union(
                 query_inverted_indices(MEMBER_PREFIX, 'member', context.owner))
+           
+            if context.owner is None:
+                context_owner = dumps(context.owner)
+            else:
+                context_owner = context.owner
+
             clause = create_index_clause(
-                [create_index_expression('owner', context.owner, index.EQ)],
+                [create_index_expression('owner', context_owner, index.EQ)],
                 count=99999999)
+
             images = image_cf.get_indexed_slices(clause)
             for key, _ in images:
                 image_ids.add(key)
