@@ -197,7 +197,7 @@ def create_image(**kwargs):
         'deleted_at': None,
         'name': None,
         'owner': None,
-        'size': None
+        # 'size': None
     }, **kwargs)
 
 def create_image_member(**kwargs):
@@ -342,6 +342,10 @@ def unmarshal_image(image):
     output['properties'] = properties
     output['tags'] = tags
     output['members'] = members
+
+    # Some tests expect size to be present
+    if not output.get('size'):
+        output['size'] = None
 
     return output
 
