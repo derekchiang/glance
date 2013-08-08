@@ -1158,9 +1158,7 @@ def image_member_find(context, image_id=None,
         criteria = []
 
         if not context.is_admin:
-            image_owner = loads(image['owner'])
-
-            if image_owner == context.owner:
+            if image['owner'] == context.owner:
                 image_is_owner = True
             else:
                 image_is_owner = False
