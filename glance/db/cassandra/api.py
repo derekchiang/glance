@@ -238,9 +238,16 @@ def create_image_tag(**kwargs):
 
 
 def dumps(obj):
+    """
+    Dumps anything (including datetime objects) using the json module,
+    appending a prefix to distinguish from normal strings.
+    """
     return MARSHAL_PREFIX + json.dumps(obj, default=lambda x: time.mktime(x.timetuple()))
 
 def loads(string):
+    """
+    Loads anything, including those prefixed.
+    """
     if string.startswith(MARSHAL_PREFIX):
         obj = json.loads(string[len(MARSHAL_PREFIX):])
     else:
@@ -256,6 +263,10 @@ def loads(string):
 
 
 def marshal_image(obj):
+    """
+    Marshal all fields of an object such that they can be inserted
+    as columns into Cassandra.
+    """
     output = {}
 
     for k, v in obj.iteritems():
@@ -268,6 +279,9 @@ def marshal_image(obj):
 
 
 def unmarshal_image(image):
+    """
+    The opposite operation of marshal_image
+    """
     output = {}
     locations = []
     properties = []
@@ -306,7 +320,7 @@ def unmarshal_image(image):
 
 
 def sort_dicts(dicts, orders):
-    """Sort a list of dictionaries
+    """Sort a list of dictionaries using insertion sort
     orders are in the form of:
     [('member', 'asc'), ('age', 'desc')]
     """
@@ -611,6 +625,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
     if limit == 0:
         return []
     else:
+        # A hack to get all images when limit is not given
         limit = limit or 99999999
 
     # We are querying for images that satisfy one of the following conditions:
