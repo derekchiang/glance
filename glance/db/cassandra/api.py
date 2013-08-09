@@ -174,7 +174,7 @@ def query_inverted_indices(prefix, key, value):
     row_key = prefix + '.' + key + '=' + dumps(value)
 
     try:
-        return [k for k, v in inverted_indices_cf.get(row_key).iteritems()]
+        return inverted_indices_cf.get(row_key).keys()
     except NotFoundException:
         return []
 
@@ -351,46 +351,6 @@ def unmarshal_image(image):
     return output
 
 
-def sort_dicts(dicts, orders):
-    """Sort a list of dictionaries using insertion sort
-    orders are in the form of:
-    [('member', 'asc'), ('age', 'desc')]
-    """
-    def compare(a, b):
-        try:
-            for field, dir in orders:
-                if dir == 'asc':
-                    if a[field] > b[field]:
-                        return 1
-                    elif a[field] < b[field]:
-                        return -1
-                    else:
-                        continue
-                elif dir == 'desc':
-                    if a[field] < b[field]:
-                        return 1
-                    elif a[field] > b[field]:
-                        return -1
-                    else:
-                        continue
-            return 0
-        except KeyError:
-            raise exception.InvalidSortKey()
-    # Some ordering must be given
-    assert len(orders) > 0
-
-    # Using insertion sort for simplicity
-    out = []
-    for d in dicts:
-        i = len(out) - 1
-        while i >= 0 and compare(out[i], d) > 0:
-            i = i - 1
-        out.insert(i+1, d)
-
-    return out
-
-
-
 def _check_mutate_authorization(context, image):
     if not is_image_mutable(context, image):
         LOG.info(_("Attempted to modify image user did not own."))
@@ -418,6 +378,7 @@ def image_create(context, values):
     """Create an image from the values dictionary."""
     return _image_update(context, values, None, False)
 
+
 @trace
 def image_update(context, image_id, values, purge_props=False):
     """
@@ -426,6 +387,124 @@ def image_update(context, image_id, values, purge_props=False):
     :raises NotFound if image does not exist.
     """
     return _image_update(context, values, image_id, purge_props)
+
+
+@trace
+def _image_update(context, values, image_id, purge_props=False):
+    """
+    Used internally by image_create and image_update
+
+    :param context: Request context
+    :param values: A dict of attributes to set
+    :param image_id: If None, create the image, otherwise, find and update it
+    """
+
+    #NOTE(jbresnah) values is altered in this so a copy is needed
+    values = values.copy()
+
+    LOG.info('real values: ')
+    LOG.info(values)
+
+    # Remove the properties passed in the values mapping. We
+    # handle properties separately from base image attributes,
+    # and leaving properties in the values mapping will cause
+    # a SQLAlchemy model error because SQLAlchemy expects the
+    # properties attribute of an Image model to be a list and
+    # not a dict.
+    properties = values.pop('properties', {})
+
+    location_data = values.pop('locations', None)
+
+    if image_id:
+        image = image_cf.get(image_id)
+        # Perform authorization check
+        _check_mutate_authorization(context, image)
+    else:
+        # Test if an image with this id already exists
+        # TODO: is there a better way?
+        if values.get('id'):
+            try:
+                # Just checking for existence, so only getting
+                # the id column
+                _ = image_get(context, values['id'], ['id'])
+                raise exception.Duplicate("Image ID %s already exists!"
+                                          % values['id'])
+            except exception.NotFound:
+                pass
+
+        if values.get('size') is not None:
+            values['size'] = int(values['size'])
+
+        if 'min_ram' in values:
+            values['min_ram'] = int(values['min_ram'] or 0)
+
+        if 'min_disk' in values:
+            values['min_disk'] = int(values['min_disk'] or 0)
+
+        values['is_public'] = bool(values.get('is_public', False))
+        values['protected'] = bool(values.get('protected', False))
+
+        image = create_image()
+        print 'creating image'
+        print image['created_at']
+
+    # Need to canonicalize ownership
+    if 'owner' in values and not values['owner']:
+        values['owner'] = None
+
+    if image_id:
+        # Don't drop created_at if we're passing it in...
+        drop_protected_attrs(values)
+        #NOTE(iccha-sethi): updated_at must be explicitly set in case
+        #                   only ImageProperty table was modifited
+        values['updated_at'] = timeutils.utcnow()
+
+    # Validate the attributes before we go any further. From my
+    # investigation, the @validates decorator does not validate
+    # on new records, only on existing records, which is, well,
+    # idiotic.
+    image = dict(image, **values)
+    values = _validate_image(image)
+
+    # Batch operations on inverted indices and images
+    batch = Mutator(pool)
+
+    orig_properties = unmarshal_image(image)['properties']
+    orig_properties_names = [x['name'] for x in orig_properties]
+    new_properties_names = properties.keys()
+
+    if purge_props:
+        prop_names_to_delete = set(orig_properties_names) - set(new_properties_names)
+        _image_property_delete(context, prop_names_to_delete,
+                           image['id'], batch=batch)
+
+    for name in properties:
+        prop_values = create_image_property(image_id=image['id'],
+                                            name=name,
+                                            value=properties[name])
+
+        if name in orig_properties_names:
+            _image_property_delete(context, [name], image['id'], batch)
+
+        image_property_create(context, prop_values, batch=batch)
+        image[prop_values['id']] = prop_values
+
+    if location_data is not None:
+        _image_locations_set(image, location_data, batch)
+
+    print 'marshalled: '
+    print marshal_image(image)
+    batch.insert(image_cf, image['id'], marshal_image(image))
+
+    batch.send()
+
+    image = _normalize_locations(unmarshal_image(image))
+    # TODO: Deleting tags for now since the tests are not expecting
+    # tags being returned.  Discuss later.
+
+    del image['tags']
+    return image
+
 
 @trace
 def image_destroy(context, image_id):
@@ -436,6 +515,7 @@ def image_destroy(context, image_id):
     image_cf.remove(image_id)
 
     return image
+
 
 @trace
 def image_get(context, image_id, session=None, force_show_deleted=False):
@@ -459,6 +539,7 @@ def image_get(context, image_id, session=None, force_show_deleted=False):
         raise exception.Forbidden(msg)
 
     return image
+
 
 def is_image_mutable(context, image):
     """Return True if the image is mutable in this context."""
@@ -494,6 +575,13 @@ def is_image_sharable(context, image, **kwargs):
         if membership is None:
             # Not shared with us anyway
             return False
+
+    # It's not clear whether the given image will contain
+    # members.
+    if image['members']:
+            for member in members:
+                if member.member == context.owner:
+                    return member['can_share']    
     else:
         members = image_member_find(context,
                                     image_id=image['id'],
@@ -607,13 +695,31 @@ def _paginate(images, limit, sort_keys, marker=None,
     assert(len(sort_dirs) == len(sort_keys))
 
     sort_criteria = zip(sort_keys, sort_dirs)
-    sorted_images = sort_dicts(images, sort_criteria)
 
-    print 'sorted images: '
-    print sorted_images
-    
-    for i in sorted_images:
-        print i['created_at']
+    # Custom comparison function
+    def compare(a, b):
+        try:
+            for field, dir in orders:
+                if dir == 'asc':
+                    if a[field] > b[field]:
+                        return 1
+                    elif a[field] < b[field]:
+                        return -1
+                    else:
+                        continue
+                elif dir == 'desc':
+                    if a[field] < b[field]:
+                        return 1
+                    elif a[field] > b[field]:
+                        return -1
+                    else:
+                        continue
+            return 0
+        except KeyError:
+            raise exception.InvalidSortKey()
+
+    # cmp is deprecated in Python 3.X
+    sorted_images = sorted(images, cmp=compare)
 
     if marker is None:
         return sorted_images[:limit]
@@ -853,123 +959,6 @@ def _update_values(image_ref, values):
         if getattr(image_ref, k) != values[k]:
             setattr(image_ref, k, values[k])
 
-@trace
-def _image_update(context, values, image_id, purge_props=False):
-    """
-    Used internally by image_create and image_update
-
-    :param context: Request context
-    :param values: A dict of attributes to set
-    :param image_id: If None, create the image, otherwise, find and update it
-    """
-
-    #NOTE(jbresnah) values is altered in this so a copy is needed
-    values = values.copy()
-
-    LOG.info('real values: ')
-    LOG.info(values)
-
-    # Remove the properties passed in the values mapping. We
-    # handle properties separately from base image attributes,
-    # and leaving properties in the values mapping will cause
-    # a SQLAlchemy model error because SQLAlchemy expects the
-    # properties attribute of an Image model to be a list and
-    # not a dict.
-    properties = values.pop('properties', {})
-
-    location_data = values.pop('locations', None)
-
-    if image_id:
-        image = image_cf.get(image_id)
-        # Perform authorization check
-        _check_mutate_authorization(context, image)
-    else:
-        # Test if an image with this id already exists
-        # TODO: is there a better way?
-        if values.get('id'):
-            try:
-                # Just checking for existence, so only getting
-                # the id column
-                _ = image_get(context, values['id'], ['id'])
-                raise exception.Duplicate("Image ID %s already exists!"
-                                          % values['id'])
-            except exception.NotFound:
-                pass
-
-        if values.get('size') is not None:
-            values['size'] = int(values['size'])
-
-        if 'min_ram' in values:
-            values['min_ram'] = int(values['min_ram'] or 0)
-
-        if 'min_disk' in values:
-            values['min_disk'] = int(values['min_disk'] or 0)
-
-        values['is_public'] = bool(values.get('is_public', False))
-        values['protected'] = bool(values.get('protected', False))
-
-        image = create_image()
-        print 'creating image'
-        print image['created_at']
-
-    # Need to canonicalize ownership
-    if 'owner' in values and not values['owner']:
-        values['owner'] = None
-
-    if image_id:
-        # Don't drop created_at if we're passing it in...
-        drop_protected_attrs(values)
-        #NOTE(iccha-sethi): updated_at must be explicitly set in case
-        #                   only ImageProperty table was modifited
-        values['updated_at'] = timeutils.utcnow()
-
-    # Validate the attributes before we go any further. From my
-    # investigation, the @validates decorator does not validate
-    # on new records, only on existing records, which is, well,
-    # idiotic.
-    image = dict(image, **values)
-    values = _validate_image(image)
-
-    # Batch operations on inverted indices and images
-    batch = Mutator(pool)
-
-    orig_properties = unmarshal_image(image)['properties']
-    orig_properties_names = [x['name'] for x in orig_properties]
-    new_properties_names = properties.keys()
-
-    if purge_props:
-        prop_names_to_delete = set(orig_properties_names) - set(new_properties_names)
-        _image_property_delete(context, prop_names_to_delete,
-                           image['id'], batch=batch)
-
-    for name in properties:
-        prop_values = create_image_property(**{
-            'image_id': image['id'],
-            'name': name,
-            'value': properties[name]
-        })
-
-        if name in orig_properties_names:
-            _image_property_delete(context, [name], image['id'], batch)
-
-        image_property_create(context, prop_values, batch=batch)
-        image[prop_values['id']] = prop_values
-
-    if location_data is not None:
-        _image_locations_set(image, location_data, batch)
-
-    print 'marshalled: '
-    print marshal_image(image)
-    batch.insert(image_cf, image['id'], marshal_image(image))
-
-    batch.send()
-
-    image = _normalize_locations(unmarshal_image(image))
-    # TODO: Deleting tags for now since the tests are not expecting
-    # tags being returned.  Discuss later.
-
-    del image['tags']
-    return image
 
 def _normalize_locations(image):
     # For consumption outside of this module
@@ -979,7 +968,7 @@ def _normalize_locations(image):
     return image
 
 @trace
-def _image_locations_set(image, locations, batch=None):
+def _image_locations_set(image, locations, batch):
 
     # Remove existing locations
     remove_columns = []
@@ -993,11 +982,6 @@ def _image_locations_set(image, locations, batch=None):
     for column in remove_columns:
         del image[column]
 
-    # TODO: As it currently stands, if there are N locations given,
-    # then we will issue N queries to Cassandra, each inserting one
-    # location.  But in fact, we could totally insert all locations
-    # at once.  We might want to optimize this.
-
     for location in locations:
         new_location = create_image_location(
                               image_id=image['id'],
@@ -1009,21 +993,22 @@ def _image_locations_set(image, locations, batch=None):
 
 def image_property_create(context, values, batch=None, updating=False):
     """Create an ImageProperty object"""
+    if batch == None:
+        batch = Mutator(pool)
+
     prop = create_image_property()
     prop = _image_property_update(context, prop, values,
                                   batch=batch)
+
+    batch.send()
+
     return prop
 
 
-def _image_property_update(context, prop, values, batch=None, updating=True):
+def _image_property_update(context, prop, values, batch, updating=True):
     """
     Used internally by image_property_create and image_property_update
     """
-    using_own_batch = False
-    if batch == None:
-        using_own_batch = True
-        batch = Mutator(pool)
-
     # TODO: think about whether we need this line
     # drop_protected_attrs(values)
 
@@ -1034,9 +1019,6 @@ def _image_property_update(context, prop, values, batch=None, updating=True):
     save_inverted_indices(prop, PROPERTY_PREFIX, batch)
 
     batch.insert(image_cf, prop['image_id'], {prop['id']: dumps(prop)})
-
-    if using_own_batch:
-        batch.send()
 
     return prop
 
@@ -1051,7 +1033,7 @@ def image_property_delete(context, prop_name, image_id):
 
     return prop
 
-def _image_property_delete(context, prop_names, image_id, batch=None):
+def _image_property_delete(context, prop_names, image_id, batch):
     remove_columns = []
 
     if prop_names == []:
@@ -1332,6 +1314,7 @@ def image_tag_get_all(context, image_id):
         tags = unmarshal_image(image_cf.get(image_id)).get('tags') or []
     except NotFoundException:
         return []
-    tags = sort_dicts(tags, [('created_at', 'asc')])
+
+    tags.sort(key=lambda tag: tag['created_at'])
 
     return [tag['value'] for tag in tags]
