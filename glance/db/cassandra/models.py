@@ -66,10 +66,20 @@ def register_models():
 
         # Create indices on columns
         sys.create_index(KEYSPACE_NAME, 'Images', 'id', 'UTF8Type')
-        sys.create_index(KEYSPACE_NAME, 'Images', 'is_public', 'BooleanType')
-        sys.create_index(KEYSPACE_NAME, 'Images', 'owner', 'UTF8Type')
         sys.create_index(KEYSPACE_NAME, 'Images', 'name', 'UTF8Type')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'disk_format', 'UTF8Type')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'container_format', 'UTF8Type')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'size', 'IntegerType')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'status', 'UTF8Type')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'is_public', 'BooleanType')
         sys.create_index(KEYSPACE_NAME, 'Images', 'checksum', 'UTF8Type')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'min_disk', 'IntegerType')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'min_ram', 'IntegerType')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'owner', 'UTF8Type')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'protected', 'BooleanType')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'created_at', 'DateType')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'updated_at', 'DateType')
+        sys.create_index(KEYSPACE_NAME, 'Images', 'deleted', 'BooleanType')
 
         sys.create_column_family(KEYSPACE_NAME, 'InvertedIndices',
                                  comparator_type=UTF8Type(),

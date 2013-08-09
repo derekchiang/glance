@@ -698,7 +698,13 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                 shared_image_ids = shared_image_ids.intersection(
                     query_inverted_indices(MEMBER_PREFIX, 'status', member_status))
 
-    common_filters = []
+    # The reason why we are having this index expression is that,
+    # although we do not support soft delete, we need to have at least
+    # one equality expression in our index clause in order for Cassandra
+    # secondary index search to work.  This is really just a dummy
+    # expression since all images in the database will have deleted=False.
+    # Without this, queries like 'size > 10' won't work.
+    common_filters = [create_index_expression('deleted', False, index.EQ)]
 
     if 'visibility' in filters:
         visibility = filters.pop('visibility')
@@ -784,6 +790,8 @@ def image_get_all(context, filters=None, marker=None, limit=None,
 
     def filter_images(filters):
         if filters != []:
+            print 'filtering'
+            print filters
             res = image_cf.get_indexed_slices(create_index_clause(
                 filters))
             for key, image in res:
