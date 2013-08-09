@@ -133,8 +133,9 @@ def setup_db_env():
         inverted_indices_cf = ColumnFamily(pool, 'InvertedIndices')
     except NotFoundException:
         unregister_models()
-        # TODO: potential infinite recursion?
-        setup_db_env()
+        register_models()
+        image_cf = ColumnFamily(pool, 'Images')
+        inverted_indices_cf = ColumnFamily(pool, 'InvertedIndices')
 
 
 def clear_db_env():
@@ -300,6 +301,9 @@ def marshal_image(obj):
     for k, v in obj.iteritems():
         if is_supported_type(v):
             output[k] = v
+        elif k in ['locations', 'members', 'properties', 'tags']:
+            for item in v:
+                output[item['id']] = dumps(item)
         else:
             output[k] = dumps(v)
 
@@ -343,10 +347,6 @@ def unmarshal_image(image):
     output['properties'] = properties
     output['tags'] = tags
     output['members'] = members
-
-    # Some tests expect size to be present
-    if not output.get('size'):
-        output['size'] = None
 
     return output
 
@@ -469,41 +469,58 @@ def _image_update(context, values, image_id, purge_props=False):
     # Batch operations on inverted indices and images
     batch = Mutator(pool)
 
-    orig_properties = unmarshal_image(image)['properties']
+    unmarshalled_image = unmarshal_image(image)
+
+    orig_properties = unmarshalled_image['properties']
     orig_properties_names = [x['name'] for x in orig_properties]
     new_properties_names = properties.keys()
 
     if purge_props:
         prop_names_to_delete = set(orig_properties_names) - set(new_properties_names)
         _image_property_delete(context, prop_names_to_delete,
-                           image['id'], batch=batch)
+                           unmarshalled_image['id'], batch=batch)
+        unmarshalled_image['properties'] = []
 
+    new_properties = []
     for name in properties:
-        prop_values = create_image_property(image_id=image['id'],
+        prop_values = create_image_property(image_id=unmarshalled_image['id'],
                                             name=name,
                                             value=properties[name])
 
         if name in orig_properties_names:
-            _image_property_delete(context, [name], image['id'], batch)
+            _image_property_delete(context, [name], unmarshalled_image['id'], batch)
 
         image_property_create(context, prop_values, batch=batch)
-        image[prop_values['id']] = prop_values
+        new_properties.append(prop_values)
+
+    unmarshalled_image['properties'].extend(new_properties)
 
     if location_data is not None:
-        _image_locations_set(image, location_data, batch)
+        _image_locations_set(unmarshalled_image, location_data, batch)
 
-    print 'marshalled: '
-    print marshal_image(image)
-    batch.insert(image_cf, image['id'], marshal_image(image))
+    print 'unmarshalled_image:'
+    print unmarshalled_image
+
+    marshalled_image = marshal_image(unmarshalled_image)
+
+
+    print 'marshalled image:'
+    print marshalled_image
+
+    batch.insert(image_cf, image['id'], marshalled_image)
 
     batch.send()
 
-    image = _normalize_locations(unmarshal_image(image))
-    # TODO: Deleting tags for now since the tests are not expecting
-    # tags being returned.  Discuss later.
+    returned_image = _normalize_locations(unmarshal_image(marshalled_image))
+    
+    # Some tests expect tags to not be returned
+    del returned_image['tags']
 
-    del image['tags']
-    return image
+    # Some tests expect size to exist as None
+    if not 'size' in returned_image:
+        returned_image['size'] = None
+
+    return returned_image
 
 
 @trace
@@ -793,7 +810,8 @@ def image_get_all(context, filters=None, marker=None, limit=None,
 
     if (not context.is_admin) or admin_as_user == True:
         print 'not a admin'
-        public_image_filters.append(create_index_expression('is_public', True, index.EQ))
+        if is_public is not False:
+            public_image_filters.append(create_index_expression('is_public', True, index.EQ))
 
         if context.owner is not None:
             own_image_filters.append(create_index_expression('owner', context.owner, index.EQ))
@@ -910,18 +928,21 @@ def image_get_all(context, filters=None, marker=None, limit=None,
         own_image_filters == [] and
         shared_image_ids == []):
         filter_images(common_filters)
+    else:
 
-    public_image_filters.extend(common_filters)
-    filter_images(public_image_filters)
+        if public_image_filters != []:
+            public_image_filters.extend(common_filters)
+            filter_images(public_image_filters)
 
-    own_image_filters.extend(common_filters)
-    filter_images(own_image_filters)
+        if own_image_filters != []:
+            own_image_filters.extend(common_filters)
+            filter_images(own_image_filters)
 
-    if shared_image_ids != []:
-        for image_id in shared_image_ids:
-            temp_filters = [create_index_expression('id', image_id, index.EQ)]
-            temp_filters.extend(common_filters)
-            filter_images(temp_filters)
+        if shared_image_ids != []:
+            for image_id in shared_image_ids:
+                temp_filters = [create_index_expression('id', image_id, index.EQ)]
+                temp_filters.extend(common_filters)
+                filter_images(temp_filters)
 
     images = [unmarshal_image(image) for image in images]
     images = filter(lambda x: client_side_filters.match(x), images)
@@ -985,13 +1006,16 @@ def _image_locations_set(image, locations, batch):
     for column in remove_columns:
         del image[column]
 
+    new_locations = []
     for location in locations:
         new_location = create_image_location(
                               image_id=image['id'],
                               url=location['url'],
                               metadata=location['metadata'])
         save_inverted_indices(new_location, LOCATION_PREFIX, batch)
-        image[new_location['id']] = new_location
+        new_locations.append(new_location)
+
+    image['locations'] = new_locations
 
 
 def image_property_create(context, values, batch=None, updating=False):
