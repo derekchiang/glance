@@ -133,6 +133,7 @@ def setup_db_env():
         inverted_indices_cf = ColumnFamily(pool, 'InvertedIndices')
     except NotFoundException:
         unregister_models()
+        # TODO: potential infinite recursion?
         setup_db_env()
 
 
@@ -152,7 +153,7 @@ def save_inverted_indices(obj, prefix, batch):
         # row key would be something like:
         # members.status=pending
         if k != 'image_id':
-            row_key = prefix + '.' + dumps(k) + '=' + dumps(v)
+            row_key = prefix + '.' + k + '=' + dumps(v)
             batch.insert(inverted_indices_cf, row_key, {image_id: ''})
 
 
@@ -165,12 +166,12 @@ def delete_inverted_indices(obj, prefix, batch):
     if image_id:
         for k, v in obj.iteritems():
             if k != 'image_id':
-                row_key = prefix + '.' + dumps(k) + '=' + dumps(v)
+                row_key = prefix + '.' + k + '=' + dumps(v)
                 batch.remove(inverted_indices_cf, row_key, [image_id])
 
 
 def query_inverted_indices(prefix, key, value):
-    row_key = prefix + '.' + dumps(key) + '=' + dumps(value)
+    row_key = prefix + '.' + key + '=' + dumps(value)
 
     try:
         return [k for k, v in inverted_indices_cf.get(row_key).iteritems()]
@@ -714,7 +715,7 @@ def image_get_all(context, filters=None, marker=None, limit=None,
             common_filters.append(create_index_expression('is_public', False, index.EQ))
             if context.owner is not None and ((not context.is_admin)
                                               or admin_as_user == True):
-                common_filters.append('owner', context.owner, index.EQ)
+                common_filters.append(create_index_expression('owner', context.owner, index.EQ))
         else:
             shared_image_ids.union(query_inverted_indices(
                 MEMBER_PREFIX, 'member', context.owner))
