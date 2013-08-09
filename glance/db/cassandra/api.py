@@ -699,7 +699,7 @@ def _paginate(images, limit, sort_keys, marker=None,
     # Custom comparison function
     def compare(a, b):
         try:
-            for field, dir in orders:
+            for field, dir in sort_criteria:
                 if dir == 'asc':
                     if a[field] > b[field]:
                         return 1
@@ -906,7 +906,10 @@ def image_get_all(context, filters=None, marker=None, limit=None,
                     images.append(image)
                     key_set.add(key)
 
-    filter_images(common_filters)
+    if (public_image_filters == [] and 
+        own_image_filters == [] and
+        shared_image_ids == []):
+        filter_images(common_filters)
 
     public_image_filters.extend(common_filters)
     filter_images(public_image_filters)
